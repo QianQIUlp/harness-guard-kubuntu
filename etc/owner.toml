@@ -1,0 +1,7 @@
+# The user whose agents are guarded. Written once by the package (postinst) and kept
+# on upgrade and remove; read by the launcher, hand-off, policy compiler, setup helper
+# and console. The AppArmor profiles still name /home/qiu and UID 1000 directly.
+user = "qiu"
+uid = 1000
+gid = 1000
+home = "/home/qiu"

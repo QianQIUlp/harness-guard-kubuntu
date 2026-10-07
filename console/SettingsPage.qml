@@ -1,4 +1,5 @@
-// How the console itself behaves: tray, notifications, starting at login.
+// How the console itself behaves (tray, notifications, starting at login), and what is
+// installed: the package, and each agent's receipt with Guard or Release.
 import QtQuick
 import QtQuick.Controls.Basic as Q
 import QtQuick.Layouts
@@ -90,6 +91,107 @@ Item {
             }
 
             Rule { Layout.fillWidth: true; Layout.topMargin: 36 }
+            Caption {
+                Layout.topMargin: 26
+                text: "Installed · harness-guard " + (guard.setup.package || "(not from the package)")
+            }
+            Text {
+                Layout.fillWidth: true
+                Layout.topMargin: 8
+                text: "Guarding an agent records what it changes first (in /var/lib/harness-guard/receipts); releasing puts exactly that back. Removing the package releases every agent."
+                color: Theme.muted
+                font.family: Theme.serif
+                font.italic: true
+                font.pixelSize: 14
+                wrapMode: Text.WordWrap
+            }
+            Repeater {
+                model: guard.setup.agents
+                delegate: ColumnLayout {
+                    id: receipt
+                    required property var modelData
+                    property bool open: false
+                    // Guarded, but its entry point no longer runs the launcher (a vendor reinstall).
+                    property bool broken: receipt.modelData.guarded
+                        && guard.agents.some(a => a.id === receipt.modelData.agent && !a.guarded)
+                    Layout.fillWidth: true
+                    Layout.topMargin: 18
+                    spacing: 6
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 16
+                        Text {
+                            text: receipt.modelData.name
+                            color: Theme.ink
+                            font.family: Theme.sans
+                            font.pixelSize: 17
+                            font.weight: Font.Medium
+                            textFormat: Text.PlainText
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: receipt.broken ? "entry point replaced; guard it again"
+                                  : receipt.modelData.guarded
+                                  ? "guarded since " + Qt.formatDateTime(new Date(receipt.modelData.created * 1000), "d MMM yyyy HH:mm")
+                                  : !receipt.modelData.present ? "not installed"
+                                  : receipt.modelData.released ? "released by you" : "not guarded"
+                            color: receipt.broken || receipt.modelData.present && !receipt.modelData.guarded && !receipt.modelData.released
+                                   ? Theme.red : Theme.muted
+                            font.family: Theme.mono
+                            font.pixelSize: 12
+                            elide: Text.ElideRight
+                        }
+                        TextAction {
+                            visible: receipt.modelData.items.length > 0
+                            quiet: true
+                            text: receipt.open ? "Hide receipt" : "Receipt"
+                            onClicked: receipt.open = !receipt.open
+                        }
+                        TextAction {
+                            visible: receipt.broken
+                            enabled: guard.setup.busy === "" && !(guard.running[receipt.modelData.agent] > 0)
+                            accent: true
+                            text: "Guard again"
+                            onClicked: guard.setupAgent("guard", receipt.modelData.agent)
+                        }
+                        TextAction {
+                            visible: receipt.modelData.present || receipt.modelData.guarded
+                            enabled: guard.setup.busy === "" && !(guard.running[receipt.modelData.agent] > 0)
+                            accent: !receipt.modelData.guarded
+                            text: guard.setup.busy === receipt.modelData.agent ? "Waiting for the password…"
+                                  : receipt.modelData.guarded ? "Release" : "Guard"
+                            onClicked: guard.setupAgent(receipt.modelData.guarded ? "release" : "guard",
+                                                        receipt.modelData.agent)
+                        }
+                    }
+                    Repeater {
+                        model: receipt.open ? receipt.modelData.items : []
+                        delegate: Text {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            text: modelData.path + "  ·  " + modelData.text
+                            color: Theme.muted
+                            font.family: Theme.mono
+                            font.pixelSize: 11
+                            wrapMode: Text.WrapAnywhere
+                            textFormat: Text.PlainText
+                        }
+                    }
+                }
+            }
+            Text {
+                Layout.fillWidth: true
+                Layout.topMargin: 14
+                visible: guard.setup.output !== ""
+                text: guard.setup.output
+                color: Theme.ink
+                font.family: Theme.mono
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+                textFormat: Text.PlainText
+            }
+
+            Rule { Layout.fillWidth: true; Layout.topMargin: 36 }
             GridLayout {
                 Layout.topMargin: 26
                 columns: 2
@@ -100,7 +202,7 @@ Item {
                 Caption { text: "Policy" }
                 Text { text: "/etc/harness-guard/policy.toml · " + guard.policyId; color: Theme.ink; font.family: Theme.mono; font.pixelSize: 13 }
                 Caption { text: "Program" }
-                Text { text: "/usr/local/lib/harness-guard-console"; color: Theme.ink; font.family: Theme.mono; font.pixelSize: 13 }
+                Text { text: "/usr/lib/harness-guard"; color: Theme.ink; font.family: Theme.mono; font.pixelSize: 13 }
                 Caption { text: "History" }
                 Text { text: "~/.local/state/harness-guard-console · 60 days"; color: Theme.ink; font.family: Theme.mono; font.pixelSize: 13 }
                 Caption { text: "Keys" }

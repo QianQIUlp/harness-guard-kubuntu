@@ -1,8 +1,8 @@
 #!/usr/bin/python3 -I
 """Start an agent in its own guard for another guarded agent (agy as Claude's subagent).
 
-Installed as /usr/local/libexec/harness-guard-handoff and started by systemd for each
-connection to /run/user/1000/harness-guard-handoff.sock (harness-guard-handoff.socket).
+Installed as /usr/libexec/harness-guard/handoff and started by systemd for each
+connection to /run/user/UID/harness-guard-handoff.sock (harness-guard-handoff.socket).
 A guard can't switch into another one (no_new_privs), so inside a guard listed in the
 agent's handoff_from, harness-guard sends its arguments, working directory and standard
 streams here instead. This runs harness-guard as if qiu had started the agent from a
@@ -23,9 +23,9 @@ import sys
 import tomllib
 from pathlib import Path
 
-UID = 1000
-LAUNCHER = '/usr/local/libexec/harness-guard'
 ETC = Path('/etc/harness-guard')
+UID = int(tomllib.loads((ETC / 'owner.toml').read_text())['uid'])
+LAUNCHER = '/usr/libexec/harness-guard/launcher'
 
 
 def receive(conn):

@@ -1,0 +1,26 @@
+#!/bin/sh
+# harness-guard prerm: on removal, release every agent from its receipt (putting back
+# exactly what guarding changed), then unload the profiles. Upgrades keep the agents
+# guarded; the new postinst refreshes them.
+set -e
+
+case "$1" in
+remove)
+    for profile in claude-code-guard claude-desktop-guard agy-guard antigravity-guard; do
+        if grep -qs -e "^$profile " -e "^$profile//" /proc/[0-9]*/attr/current; then
+            echo "harness-guard: quit the agents running under $profile first." >&2
+            exit 1
+        fi
+    done
+    if ! /usr/sbin/harness-guard-setup release --all; then
+        echo "harness-guard: an agent could not be released (see above), so the package stays" \
+             "installed. Fix it, or remove its receipt in /var/lib/harness-guard/receipts, and" \
+             "remove again." >&2
+        exit 1
+    fi
+    for profile in harness-guard-launcher claude-code-guard claude-desktop-guard agy-guard antigravity-guard; do
+        apparmor_parser -R "/etc/apparmor.d/$profile" 2>/dev/null || true
+    done
+    ;;
+esac
+exit 0

@@ -24,7 +24,7 @@ AppArmor. The guard has three goals:
 claude / agy / antigravity / menu entries
   -> root-owned forwarder (~/.local/bin/{claude,agy}, /usr/local/bin/antigravity,
      /usr/lib/claude-desktop/claude-desktop)
-  -> /usr/local/libexec/harness-guard AGENT (Python, runs as qiu; how to run each
+  -> /usr/libexec/harness-guard/launcher AGENT (Python, runs as qiu; how to run each
      agent comes from /etc/harness-guard/agents/AGENT.toml)
        allowlisted environment, fetch GitHub token, close inherited descriptors,
        switch itself into the AppArmor profile, verify "(enforce)", set no_new_privs,
@@ -40,6 +40,9 @@ If the
 profile is missing or only complaining, the launcher refuses to start; it never falls
 back to running unconfined.
 
+Everything is one Debian package, `harness-guard_VERSION_all.deb`, built by
+`tools/build-deb.sh`; dpkg owns every installed file.
+
 | Path | Installed as |
 | --- | --- |
 | `apparmor/abstractions/harness-guard` | `/etc/apparmor.d/abstractions/harness-guard`: rules shared by every agent guard |
@@ -52,23 +55,36 @@ back to running unconfined.
 | `apparmor/agy-guard` | `/etc/apparmor.d/agy-guard` |
 | `apparmor/antigravity-guard` | `/etc/apparmor.d/antigravity-guard`: the Antigravity app, its language server and agents |
 | `agents/*.toml` | `/etc/harness-guard/agents/`: how the launcher runs each agent |
-| `etc/policy.toml` | `/etc/harness-guard/policy.toml`, created once: your path choices per agent |
-| `bin/harness-guard` | `/usr/local/libexec/harness-guard`: the launcher |
-| `bin/harness-guard-handoff`, `etc/systemd/harness-guard-handoff*` | `/usr/local/libexec/harness-guard-handoff`, started per request by the user socket unit in `/etc/systemd/user`: starts agy in its own guard for Claude |
-| `bin/harness-guard-apply` | `/usr/local/sbin/harness-guard-apply`: compiles the policy into `/etc/apparmor.d/harness-guard/` and reloads the profiles |
-| `console/` (program, QML, `qmldir`) | `/usr/local/lib/harness-guard-console/`, started as `harness-guard-console` or "Harness Guard" in the menu: the console (below) |
-| `console/org.harness-guard.apply.policy` | `/usr/share/polkit-1/actions/`: lets the console run `harness-guard-apply` through `pkexec`, admin password every time |
-| `tools/check.sh` | also `/usr/local/libexec/harness-guard-check`, which the console runs |
-| `bin/xdg-open`, `bin/bwrap` | `/usr/local/libexec/harness-guard-bin/` (first in the guarded `PATH`) |
+| `etc/owner.toml` | `/etc/harness-guard/owner.toml`, written once (default in `/usr/share/harness-guard/`): the user, UID and home whose agents are guarded |
+| `etc/policy.toml` | `/etc/harness-guard/policy.toml`, written once (default in `/usr/share/harness-guard/`): your path choices per agent |
+| `bin/harness-guard` | `/usr/libexec/harness-guard/launcher`: the launcher |
+| `bin/harness-guard-handoff`, `etc/systemd/harness-guard-handoff*` | `/usr/libexec/harness-guard/handoff`, started per request by the user socket unit in `/usr/lib/systemd/user`: starts agy in its own guard for Claude |
+| `bin/harness-guard-apply` | `/usr/sbin/harness-guard-apply`: compiles the policy into `/etc/apparmor.d/harness-guard/` and reloads the profiles |
+| `bin/harness-guard-setup` | `/usr/sbin/harness-guard-setup`: guards and releases agents, with a receipt per agent in `/var/lib/harness-guard/receipts/` |
+| `console/` (program, QML, `qmldir`) | `/usr/lib/harness-guard/`, started as `/usr/bin/harness-guard-console` or "Harness Guard" in the menu: the console (below) |
+| `console/org.harness-guard.policy` | `/usr/share/polkit-1/actions/`: lets the console run `harness-guard-apply` and `harness-guard-setup` through `pkexec`, admin password every time |
+| `tools/check.sh` | also `/usr/libexec/harness-guard/check`, which the console runs |
+| `bin/xdg-open`, `bin/bwrap` | `/usr/libexec/harness-guard/bin/` (first in the guarded `PATH`) |
 | `etc/gitconfig` | `/etc/harness-guard/gitconfig` |
 | `etc/gtk.gschema.override` | compiled into `/etc/harness-guard/gtk-schemas/` |
+| `packaging/` | the package's maintainer scripts |
 
-`install.sh` also writes the forwarders, keeps the packaged Desktop ELF diverted to
-`claude-desktop.real`, moves the real `agy` to `~/.local/state/agy/guard-bin/`, points
-`/usr/local/bin/antigravity` and the Antigravity menu entry at the launcher, and sets
-up Cowork's `vhost_vsock` access. The CLI forwarders `~/.local/bin/{claude,agy}` are
+**Guarding an agent** is `harness-guard-setup guard AGENT`: it writes the forwarders,
+diverts the packaged Desktop ELF to `claude-desktop.real`, moves the real `agy` to
+`~/.local/state/agy/guard-bin/`, points `/usr/local/bin/antigravity` and the
+Antigravity menu entry at the launcher, enables the agy hand-off socket, and sets up
+Cowork's `vhost_vsock` access. The CLI forwarders `~/.local/bin/{claude,agy}` are
 root-owned and immutable (`chattr +i`) so an agent can't replace them with an
-unconfined program; `install.sh uninstall` removes them and puts `agy` back.
+unconfined program. Before changing anything it records the original of each thing
+it touches (bytes, owner, mode, times, immutable flag, symlink target, diversion,
+unit, device ACL) in `/var/lib/harness-guard/receipts/AGENT.json`.
+`harness-guard-setup release AGENT` puts exactly that back and deletes the receipt; a
+file someone else changed since (a reinstalled menu entry) is left as it is and
+reported, and if Claude Code's original version was removed by an update, `claude`
+points at the version in use instead. Installing the package guards every agent that
+is installed, except ones you released; removing it releases every agent first.
+`harness-guard-setup status` lists the receipts, and so does the console's Settings
+page, with Guard and Release per agent.
 
 ## What Claude can and cannot do
 
@@ -116,7 +132,8 @@ The `SSH_CONNECTION` trick used for agy doesn't work here: it switches the app t
 paste-the-code sign-in that the app never shows. Its cookies use Chromium's built-in
 key (`--password-store=basic`) instead of KWallet. `/opt/antigravity`
 is read-only inside the guard: the app's updater does nothing for this kind of install,
-so install new versions as before, outside the guard, then rerun `sudo ./install.sh`
+so install new versions as before, outside the guard, then choose "Guard again" in
+the console's Settings, or run `sudo harness-guard-setup guard antigravity`
 (`check.sh` reports when the command or menu entry no longer uses the launcher). The
 app's "install Antigravity IDE" wizard is blocked, because it would write an unguarded
 IDE into `~/.local/share`. Your own use of the app is limited to the work areas too.
@@ -129,17 +146,26 @@ which is still confined by the guard. Glycin falls back only on that specific na
 ## Use
 
 ```bash
-sudo ./install.sh          # install, or apply changes from this repository
+./install.sh               # build the package from this checkout and apt install it
 tools/check.sh             # as qiu, from a normal terminal
-sudo ./install.sh uninstall
+./install.sh uninstall     # apt remove: releases every agent, then removes the package
+./install.sh purge         # also removes /etc/harness-guard and /var/lib/harness-guard
 ```
 
-Quit Claude Code, Claude Desktop, Antigravity and agy before installing; the script
-refuses otherwise.
+Run `install.sh` as yourself: it builds the package with `fakeroot` and only `apt`
+runs through `sudo`, so nothing in this checkout runs as root directly. A release's
+`.deb` installs the same way (`sudo apt install ./harness-guard_*_all.deb`, or Discover)
+and removes with `sudo apt remove harness-guard`. Quit Claude Code, Claude Desktop,
+Antigravity and agy before installing or removing; the package refuses otherwise.
+Installing over the old `/usr/local` layout of `install.sh` (before 0.7) first undoes
+that layout, so the receipts record the original machine.
 **This repository is inside `~/src`, so Claude can edit it. Read `git diff` before every
-`sudo ./install.sh`**: that is the one moment Claude-written code runs as root.
-Editing this repository changes nothing until `install.sh` runs. Inside the guard,
-sudo is denied, so Claude can propose changes here but cannot apply them.
+`./install.sh`**: the package built from it runs as root. Editing this repository
+changes nothing until the package is installed. Inside the guard, sudo is denied, so
+Claude can propose changes here but cannot apply them.
+Removing the package keeps `/etc/harness-guard/{owner,policy}.toml` and the agents you
+released by name (in `/var/lib/harness-guard/released/`) until purge; the console's
+history in `~/.local/state/harness-guard-console` is yours and stays.
 
 `claude update`, `claude install <version>` and `agy update` work normally. The updaters
 write into `~/.local/state/{claude,agy}/guard-bin`, which the launcher shows as
@@ -159,9 +185,11 @@ changed since the console read it. Closing the window leaves it in the tray, whe
 notifies you when a guard opens, a check starts failing, or an agent is refused
 (Settings turns this off, or starts it at login). History and settings are in
 `~/.local/state/harness-guard-console`. Start always runs the launcher, never the
-agent's entry point, so it fails closed. The console runs as you, unguarded, offers
+agent's entry point, so it fails closed; its error output also goes to the journal
+(`journalctl -t harness-guard-AGENT`), and a CLI's window stays open when it fails. The console runs as you, unguarded, offers
 no D-Bus or socket API, and refuses to start unless it is the root-owned installed
-copy. Activity offers "Allow…" only as a draft entry for review, and never for `~/.*`
+copy. Settings shows the installed package and each agent's receipt, with Guard
+and Release through `pkexec harness-guard-setup`. Activity offers "Allow…" only as a draft entry for review, and never for `~/.*`
 paths, since an agent chooses what it gets denied. Activity needs your user to read
 the kernel journal (as `check.sh` does).
 

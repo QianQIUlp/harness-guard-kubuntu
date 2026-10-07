@@ -2,6 +2,6 @@
 Type=Application
 Name=Harness Guard
 Comment=See and change what the guarded coding agents may access
-Exec=/usr/local/bin/harness-guard-console
+Exec=/usr/bin/harness-guard-console
 Icon=harness-guard-console
 Categories=System;Security;

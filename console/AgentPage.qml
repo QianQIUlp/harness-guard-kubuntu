@@ -134,8 +134,8 @@ Item {
                         wrapMode: Text.WordWrap
                         text: page.st === "running" ? "Held by " + page.agent.profile + ". Reach changes load while it runs."
                             : page.st === "idle" ? "Held, at rest. It starts through the launcher, never around it."
-                            : !page.agent.guarded ? page.agent.entry + " no longer runs the launcher. Rerun the installer."
-                            : page.agent.profile + " is not enforcing. Rerun the installer."
+                            : !page.agent.guarded ? page.agent.entry + " no longer runs the launcher. Guard it again in Settings."
+                            : page.agent.profile + " is not enforcing. Reinstall the package."
                         color: Theme.soft(page.st)
                         font.family: Theme.serif
                         font.italic: true

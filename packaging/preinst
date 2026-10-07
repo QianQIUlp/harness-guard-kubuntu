@@ -1,0 +1,16 @@
+#!/bin/sh
+# harness-guard preinst: refuse while a guarded agent runs, since installing replaces
+# its profile and (on a first install) its entry points.
+set -e
+
+case "$1" in
+install|upgrade)
+    for profile in claude-code-guard claude-desktop-guard agy-guard antigravity-guard; do
+        if grep -qs -e "^$profile " -e "^$profile//" /proc/[0-9]*/attr/current; then
+            echo "harness-guard: quit the agents running under $profile first." >&2
+            exit 1
+        fi
+    done
+    ;;
+esac
+exit 0

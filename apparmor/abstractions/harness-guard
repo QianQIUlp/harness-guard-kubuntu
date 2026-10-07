@@ -11,7 +11,7 @@
   network inet dgram,
   network inet6 dgram,
 
-  # System programs (shells, git, compilers, the launcher in /usr/local) run under the same guard.
+  # System programs (shells, git, compilers, the launcher in /usr/libexec) run under the same guard.
   /usr/** rmix,
   /etc/{bash.bashrc,profile,manpath.config,machine-id} r,
   /etc/profile.d/{,**} r,

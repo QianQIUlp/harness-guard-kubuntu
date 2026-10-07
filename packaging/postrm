@@ -1,0 +1,23 @@
+#!/bin/sh
+# harness-guard postrm: remove what postinst generated. Your owner and policy files
+# stay in /etc/harness-guard until purge; purge also removes /var/lib/harness-guard
+# (your released choices). The console's history in your home is yours to keep.
+set -e
+
+case "$1" in
+remove|purge)
+    home=$(sed -n 's/^home = "\(.*\)"$/\1/p' /etc/harness-guard/owner.toml 2>/dev/null || true)
+    rm -rf /etc/apparmor.d/harness-guard /etc/harness-guard/gtk-schemas
+    # The console's "Start at login" entry would run a program that is gone.
+    entry="$home/.config/autostart/harness-guard-console.desktop"
+    if [ -n "$home" ] && [ -f "$entry" ] && grep -qx 'Exec=/usr/bin/harness-guard-console --tray' "$entry"; then
+        rm -f "$entry"
+    fi
+    ;;
+esac
+case "$1" in
+purge)
+    rm -rf /etc/harness-guard /var/lib/harness-guard
+    ;;
+esac
+exit 0

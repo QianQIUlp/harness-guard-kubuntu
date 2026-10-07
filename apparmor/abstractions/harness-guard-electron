@@ -67,6 +67,12 @@
        interface=org.freedesktop.Notifications
        member={Notify,CloseNotification,GetCapabilities,GetServerInformation}
        peer=(name=org.freedesktop.Notifications),
+  # Electron resolves the name once and then calls the server by its unique name, which
+  # matches no well-known name; the server is Plasma (or unconfined elsewhere).
+  dbus send bus=session path=/org/freedesktop/Notifications
+       interface=org.freedesktop.Notifications
+       member={Notify,CloseNotification,GetCapabilities,GetServerInformation}
+       peer=(label="{unconfined,plasmashell}"),
   dbus receive bus=session peer=(name=org.freedesktop.Notifications),
   dbus receive bus=session path=/org/freedesktop/Notifications
        interface=org.freedesktop.Notifications

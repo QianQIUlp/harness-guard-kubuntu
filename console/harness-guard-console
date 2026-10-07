@@ -1,12 +1,13 @@
 #!/usr/bin/python3 -I
 """Harness Guard console: see and change what each guarded coding agent may do.
 
-Installed root-owned in /usr/local/lib/harness-guard-console and started as
-harness-guard-console (as qiu, unguarded; --tray starts it hidden in the tray). It
-reads state, runs the installed check, follows the kernel journal for denials, starts
-and stops agents through the launcher, and edits a copy of
+Installed root-owned in /usr/lib/harness-guard by the harness-guard package and
+started as harness-guard-console (as the owner, unguarded; --tray starts it hidden in
+the tray). It reads state, runs the installed check, follows the kernel journal for
+denials, starts and stops agents through the launcher, and edits a copy of
 /etc/harness-guard/policy.toml, which `harness-guard-apply --replace` installs through
-pkexec (your password every time). History and settings live in
+pkexec (your password every time). Guarding and releasing an agent runs
+`harness-guard-setup` through pkexec the same way. History and settings live in
 ~/.local/state/harness-guard-console, which no guard can write. It offers no D-Bus or
 socket API (a second start only signals the first with SIGUSR1 to show its window),
 and refuses to run from a copy that isn't root-owned (such as this repository).
@@ -38,15 +39,18 @@ from PyQt6.QtGui import QAction, QGuiApplication, QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-HOME = '/home/qiu'
 ETC = Path('/etc/harness-guard')
+HOME = tomllib.loads((ETC / 'owner.toml').read_text())['home']
 POLICY = ETC / 'policy.toml'
 COMPILED = Path('/etc/apparmor.d/harness-guard')
-APPLY = '/usr/local/sbin/harness-guard-apply'
-CHECK = '/usr/local/libexec/harness-guard-check'
-LAUNCHER = '/usr/local/libexec/harness-guard'
+APPLY = '/usr/sbin/harness-guard-apply'
+SETUP = '/usr/sbin/harness-guard-setup'
+CHECK = '/usr/libexec/harness-guard/check'
+LAUNCHER = '/usr/libexec/harness-guard/launcher'
 STATE = Path(HOME, '.local/state/harness-guard-console')
 AUTOSTART = Path(HOME, '.config/autostart/harness-guard-console.desktop')
+AUTOSTART_TEXT = ('[Desktop Entry]\nType=Application\nName=Harness Guard\n'
+                  'Exec=/usr/bin/harness-guard-console --tray\nIcon=harness-guard-console\nNoDisplay=true\n')
 PULSE = 90          # samples of running processes, one per 2 s
 KEEP_DAYS = 60      # history kept
 DEFAULTS = {'tray': True, 'notify': True, 'folders': {}}
@@ -73,7 +77,7 @@ def forwarder_ok(agent, entry):
     except OSError:
         return False
     return (stat.S_ISREG(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o022
-            and re.search(rf'^exec /usr/local/libexec/harness-guard {re.escape(agent)} "\$@"$',
+            and re.search(rf'^exec {re.escape(LAUNCHER)} {re.escape(agent)} "\$@"$',
                           text, re.M) is not None)
 
 
@@ -163,11 +167,29 @@ def save_json(path, value):
     temp.replace(path)
 
 
-def terminal(folder, command):
-    """Konsole (or the system's terminal) in FOLDER running COMMAND."""
+# A CLI agent keeps the terminal for its screen; its error output also goes to the journal
+# (tagged harness-guard-AGENT), and on failure the window stays open to show it.
+IN_TERMINAL = r'''exec 3>&2
+"$1" "$2" 2> >(tee /dev/fd/3 | logger -t "harness-guard-$2" -p user.warning)
+status=$?
+[ "$status" -eq 0 ] && exit 0
+logger -t "harness-guard-$2" -p user.warning "exited with status $status in $PWD"
+printf '\n%s exited with status %s (also in the journal). Press Enter to close.' "$2" "$status"
+read -r _'''
+
+
+def terminal(folder, agent):
+    """Konsole (or the system's terminal) in FOLDER running AGENT through the launcher."""
+    command = ['/bin/bash', '-c', IN_TERMINAL, 'harness-guard', LAUNCHER, agent]
     if konsole := shutil.which('konsole'):
         return konsole, ['--workdir', folder, '-e', *command]
     return shutil.which('x-terminal-emulator') or '/usr/bin/xterm', ['-e', *command]
+
+
+def in_journal(agent):
+    """An app agent's output and errors go to the journal, tagged harness-guard-AGENT."""
+    return '/usr/bin/systemd-cat', ['--identifier', f'harness-guard-{agent}',
+                                    '--stderr-priority', 'warning', LAUNCHER, agent]
 
 
 class Guard(QObject):
@@ -181,6 +203,7 @@ class Guard(QObject):
     pulseChanged = pyqtSignal()
     historyChanged = pyqtSignal()
     settingsChanged = pyqtSignal()
+    setupChanged = pyqtSignal()
     showRequested = pyqtSignal()
     notify = pyqtSignal(str, str, bool)  # title, text, urgent
 
@@ -191,12 +214,18 @@ class Guard(QObject):
         self._denials, self._journal_error, self._journal_buffer = {}, '', ''
         self._review, self._review_ok, self._apply_output, self._apply_exit = [], False, '', -1
         self._processes, self._pulse, self._message = [], {}, ''
+        self._setup, self._setup_busy, self._setup_output = {'package': '', 'agents': []}, '', ''
         self._started = time.time()
         self._boot = boot_id()
         self._hours = {}      # this boot: epoch hour -> agent -> denials
         self._fresh = {}      # agent -> denials seen live, waiting to be announced
         self._announced = {}  # agent -> when it was last announced
         self._settings = {**DEFAULTS, **load_json(STATE / 'settings.json', {})}
+        try:  # an entry written before the package moved the console out of /usr/local
+            if AUTOSTART.exists() and '/usr/local/bin/harness-guard-console' in AUTOSTART.read_text():
+                AUTOSTART.write_text(AUTOSTART_TEXT)
+        except OSError:
+            pass
         self._history = load_json(STATE / 'history.json', {})
         for key, empty in (('hours', {}), ('checks', []), ('events', [])):
             if not isinstance(self._history.get(key), type(empty)):
@@ -236,6 +265,7 @@ class Guard(QObject):
                        for p in sorted((ETC / 'agents').glob('*.toml'))}
         self.update_state()
         self.update_running()
+        self.run([SETUP, 'status', '--json'], self.setup_status)
         for agent, spec in self._specs.items():
             if command := [expand(arg) for arg in spec.get('version', ())]:
                 self.run(command, lambda out, code, agent=agent: self.set_version(agent, out))
@@ -256,7 +286,7 @@ class Guard(QObject):
                            'held again' if held else 'no longer held')
                 if not held:
                     self.notify.emit(f'{a["name"]} is no longer held',
-                                     'Its guard is open. Rerun the installer before using it.', True)
+                                     'Its guard is open. Guard it again in Settings before using it.', True)
         self.agentsChanged.emit()
 
     def set_version(self, agent, output):
@@ -310,9 +340,9 @@ class Guard(QObject):
                 return
             self._settings['folders'][agent] = folder
             self.save_settings()
-            program, args = terminal(path, [LAUNCHER, agent])
+            program, args = terminal(path, agent)
         else:
-            program, args, path = LAUNCHER, [agent], HOME
+            (program, args), path = in_journal(agent), HOME
         ok, _pid = QProcess.startDetached(program, args, path)
         self.record('start', agent, f'started from the console in {folder}' if spec['terminal']
                    else 'started from the console')
@@ -599,14 +629,44 @@ class Guard(QObject):
             # Your own autostart entry, written by you (agents can't write ~/.config/autostart).
             if on:
                 AUTOSTART.parent.mkdir(parents=True, exist_ok=True)
-                AUTOSTART.write_text('[Desktop Entry]\nType=Application\nName=Harness Guard\n'
-                                     'Exec=/usr/local/bin/harness-guard-console --tray\n'
-                                     'Icon=harness-guard-console\nNoDisplay=true\n')
+                AUTOSTART.write_text(AUTOSTART_TEXT)
             else:
                 AUTOSTART.unlink(missing_ok=True)
         elif key in ('tray', 'notify'):
             self._settings[key] = on
         self.save_settings()
+
+    # Installation: the package and each agent's receipt
+
+    @pyqtProperty('QVariantMap', notify=setupChanged)
+    def setup(self):
+        """Package version, and per agent: installed, guarded, the receipt's items."""
+        return {**self._setup, 'busy': self._setup_busy, 'output': self._setup_output}
+
+    def setup_status(self, output, code):
+        try:
+            self._setup = json.loads(output)
+        except ValueError:
+            self._setup = {'package': '', 'agents': []}
+            self._setup_output = output.strip() or f'{SETUP} status failed ({code})'
+        self.setupChanged.emit()
+
+    @pyqtSlot(str, str)
+    def setupAgent(self, action, agent):
+        """Guard or release AGENT through pkexec (your password every time)."""
+        if action not in ('guard', 'release') or self._setup_busy:
+            return
+        self._setup_busy, self._setup_output = agent, ''
+        self.setupChanged.emit()
+
+        def done(output, code):
+            messages = {126: 'Cancelled: no password was given.', 127: 'Not authorized.'}
+            self._setup_busy, self._setup_output = '', messages.get(code, output.strip())
+            if code == 0:
+                self.record('held' if action == 'guard' else 'open', agent,
+                            'guarded from the console' if action == 'guard' else 'released from the console')
+            self.refresh()
+        self.run(['/usr/bin/pkexec', SETUP, action, agent], done)
 
     # Permissions
 
@@ -839,7 +899,7 @@ def tray_for(app, guard):
 def main():
     files = [QML.parent, *QML.parent.iterdir()]  # this program, its QML and qmldir
     if any(p.stat().st_uid != 0 or p.stat().st_mode & 0o022 for p in files):
-        sys.exit('harness-guard-console: run the installed console (sudo ./install.sh), '
+        sys.exit('harness-guard-console: run the installed console (/usr/bin/harness-guard-console), '
                  'not a copy agents can write')
     lock = single_instance()
     if lock is None:

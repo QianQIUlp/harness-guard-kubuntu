@@ -1,4 +1,4 @@
-# How harness-guard runs Claude Desktop. Installed to /etc/harness-guard/agents/.
+# How harness-guard runs Claude Desktop. Installed to /etc/harness-guard/agents/ by the package.
 name = "Claude Desktop"
 # The root-owned forwarder that runs the launcher; the console checks it.
 entry = "/usr/lib/claude-desktop/claude-desktop"
