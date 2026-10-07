@@ -1,0 +1,13 @@
+# How harness-guard runs Claude Code (native CLI). Installed to /etc/harness-guard/agents/.
+# Paths may start with ~/ for /home/qiu/.
+profile = "claude-code-guard"
+exec = "~/.local/bin/claude"  # inside the private view below
+argv0 = "claude"
+cache = "~/.cache/claude-guard"
+tmp = "/tmp/claude-1000"
+
+# The vendor updater rewrites ~/.local/bin/claude; it sees a private writable copy
+# while the host file stays a root-owned forwarder.
+binds = [["~/.local/state/claude/guard-bin", "~/.local/bin"]]
+# First run, or the selected version was removed: link the newest installed version.
+latest = { link = "~/.local/state/claude/guard-bin/claude", versions = "~/.local/share/claude/versions" }

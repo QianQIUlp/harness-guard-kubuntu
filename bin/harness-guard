@@ -1,0 +1,153 @@
+#!/usr/bin/python3 -I
+"""Start a coding agent inside its AppArmor guard: harness-guard AGENT [ARGS...]
+
+Installed as /usr/local/libexec/harness-guard and reached through root-owned
+forwarders, e.g. ~/.local/bin/claude runs `harness-guard claude-code "$@"`.
+How each agent runs comes from /etc/harness-guard/agents/AGENT.toml, and whether it
+gets the GitHub token from /etc/harness-guard/policy.toml. Fails closed if the
+agent's profile is missing or not enforcing.
+"""
+import ctypes
+import os
+import re
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+HOME = Path('/home/qiu')
+UID = 1000
+NODE = HOME / '.nvm/versions/node/v22.23.2'
+GUARD_BIN = '/usr/local/libexec/harness-guard-bin'
+ETC = Path('/etc/harness-guard')
+
+KEEP = ('TERM', 'COLORTERM', 'LANG', 'LC_ALL', 'LC_CTYPE', 'NO_COLOR', 'GH_HOST',
+        'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
+        'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY')
+
+libc = ctypes.CDLL(None, use_errno=True)
+MS_NOSUID, MS_NOEXEC, MS_BIND = 2, 8, 4096
+
+
+def label():
+    return Path('/proc/self/attr/current').read_text().strip()
+
+
+def expand(path):
+    return str(HOME) + path[1:] if path.startswith('~/') else path
+
+
+def github_token(env):
+    """The token lives in the keyring, which no guard can reach."""
+    if token := os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN'):
+        return token
+    try:
+        return subprocess.run(['/usr/bin/gh', 'auth', 'token', '--hostname', 'github.com'],
+                              env={**env, 'GH_CONFIG_DIR': f'{HOME}/.config/gh'},
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+
+
+def environment(spec, policy):
+    """Allowlisted environment: secrets such as cloud keys or SSH_AUTH_SOCK are dropped."""
+    cache = expand(spec['cache'])
+    env = {k: v for k, v in os.environ.items() if k in KEEP + tuple(spec.get('keep_env', ()))}
+    env.update({
+        'HOME': str(HOME), 'USER': 'qiu', 'LOGNAME': 'qiu',
+        'PATH': f'{GUARD_BIN}:{NODE}/bin:{HOME}/.cargo/bin:{HOME}/.local/bin:/usr/bin:/bin',
+        'BROWSER': f'{GUARD_BIN}/xdg-open',
+        'XDG_RUNTIME_DIR': f'/run/user/{UID}',
+        'DBUS_SESSION_BUS_ADDRESS': f'unix:path=/run/user/{UID}/bus',
+        'TMPDIR': expand(spec['tmp']),
+        # Caches the guard can write must not be ones that unguarded tools execute from.
+        'XDG_CACHE_HOME': cache,
+        'NPM_CONFIG_CACHE': f'{cache}/npm',
+        'COREPACK_HOME': f'{cache}/corepack',
+        'PNPM_HOME': f'{cache}/pnpm',
+        'CARGO_HOME': f'{cache}/cargo',
+        'RUSTUP_HOME': f'{HOME}/.rustup',
+        'HISTFILE': f'{cache}/bash_history',
+        # GitHub works through GH_TOKEN; the real ~/.config/gh stays out of reach.
+        'GH_CONFIG_DIR': f'{cache}/gh',
+        'GIT_CONFIG_GLOBAL': f'{ETC}/gitconfig',
+        'GIT_CONFIG_NOSYSTEM': '1',
+        'GIT_TERMINAL_PROMPT': '0',
+    })
+    env.update({k: expand(v) for k, v in spec.get('env', {}).items()})
+    if policy.get('github_token') and (token := github_token(env)):
+        env['GH_TOKEN'] = token
+    return env
+
+
+def confine(profile):
+    with open('/proc/self/attr/current', 'w') as f:
+        f.write('changeprofile ' + profile)  # fails if the profile is not loaded
+    if label() != profile + ' (enforce)':
+        raise RuntimeError(f'{profile} is not enforcing; refusing to start')
+    if libc.prctl(38, 1, 0, 0, 0) != 0:  # PR_SET_NO_NEW_PRIVS: setuid binaries stay powerless
+        raise OSError(ctypes.get_errno(), 'PR_SET_NO_NEW_PRIVS failed')
+
+
+def mount(source, target, fstype=None, flags=0, data=None):
+    if libc.mount(source, str(target).encode(), fstype, flags, data) != 0:
+        raise OSError(ctypes.get_errno(), f'cannot mount {source.decode()} on {target}')
+
+
+def namespace(binds=()):
+    """Private mount namespace with its own /dev/pts, so the user's other terminals
+    (and the keystrokes typed into them) do not exist inside the guard."""
+    os.unshare(os.CLONE_NEWUSER | os.CLONE_NEWNS)
+    for name, value in (('setgroups', 'deny'), ('uid_map', f'{UID} {UID} 1'), ('gid_map', f'{UID} {UID} 1')):
+        Path('/proc/self', name).write_text(value)
+    mount(b'devpts', '/dev/pts', b'devpts', MS_NOSUID | MS_NOEXEC, b'newinstance,ptmxmode=0666,mode=0620')
+    for source, target in binds:
+        mount(source.encode(), target, flags=MS_BIND)
+    # The namespace UID is not 0, so exec drops the namespace capabilities.
+
+
+def link_latest(link, versions):
+    """First run, or the selected version was removed: link the newest version."""
+    link, versions = Path(expand(link)), Path(expand(versions))
+    if link.exists():
+        return
+    link.unlink(missing_ok=True)
+    found = [p for p in versions.iterdir() if re.fullmatch(r'\d+\.\d+\.\d+', p.name)]
+    if not found:
+        raise RuntimeError(f'no version in {versions}')
+    link.symlink_to(max(found, key=lambda p: tuple(map(int, p.name.split('.')))))
+
+
+def main():
+    if len(sys.argv) < 2 or not re.fullmatch(r'[a-z0-9-]+', sys.argv[1]):
+        raise RuntimeError('usage: harness-guard AGENT [ARGS...]')
+    agent, args = sys.argv[1], sys.argv[2:]
+    if os.getuid() != UID:
+        raise RuntimeError('run as qiu')
+    specs = {p.stem: tomllib.loads(p.read_text()) for p in (ETC / 'agents').glob('*.toml')}
+    if agent not in specs:
+        raise RuntimeError(f'unknown agent {agent}')
+    spec = specs[agent]
+    if label() in (s['profile'] + ' (enforce)' for s in specs.values()):
+        env = dict(os.environ)  # already guarded (e.g. Desktop starting the CLI): keep SDK IPC
+    else:
+        policy = tomllib.loads((ETC / 'policy.toml').read_text()).get('agents', {}).get(agent, {})
+        env = environment(spec, policy)
+        os.closerange(3, 1 << 20)  # descriptors opened unconfined would bypass revalidation
+        confine(spec['profile'])
+
+    binds = [(expand(source), expand(target)) for source, target in spec.get('binds', ())]
+    for directory in (spec['cache'], spec['tmp'], *(source for source, _ in binds)):
+        Path(expand(directory)).mkdir(mode=0o700, parents=True, exist_ok=True)
+    if 'latest' in spec:
+        link_latest(**spec['latest'])
+    namespace(binds)
+    program = expand(spec['exec'])
+    os.execve(program, [spec.get('argv0', program), *args, *spec.get('args', ())], env)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, RuntimeError, KeyError, tomllib.TOMLDecodeError) as error:
+        sys.exit(f'harness-guard: {error}')

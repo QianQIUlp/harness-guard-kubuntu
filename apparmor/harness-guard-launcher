@@ -4,11 +4,11 @@
 # label (claude-code-guard//&unconfined) that keeps Ubuntu's user-namespace restriction,
 # so the launcher's private namespace fails. Changing from a named profile gives a clean
 # label, as it does for launches from plasmashell. Only the root-owned launcher runs
-# here, and only until it switches to a guard.
+# here, and only until it switches to a guard. Add each new agent guard below.
 abi <abi/5.0>,
 include <tunables/global>
 
-profile claude-guard-launcher /usr/local/libexec/claude-guard {
+profile harness-guard-launcher /usr/local/libexec/harness-guard {
   include <abstractions/base>
   /** rwlkm,
   /usr/** rix,

@@ -1,0 +1,26 @@
+# Your choices per agent. Installed once to /etc/harness-guard/policy.toml (root-owned);
+# install.sh never overwrites it. After editing, apply it live (no agent restart):
+#   sudo -e /etc/harness-guard/policy.toml && sudo harness-guard-apply
+#
+# paths: access is "none", "r", "rx", "rw" or "rwx". A path ending in / (or an existing
+# directory) covers everything below it. "none" wins over any allow, so it can carve a
+# directory or file out of a wider grant. Agents' own state (~/.claude and so on) is
+# in their profiles, and keys, wallets and browser profiles stay denied whatever you
+# grant here. Write access to places that unguarded programs run or read config from
+# (shell startup files, ~/.local/bin, autostart, ~/.gitconfig, ...) is refused.
+#
+# github_token: pass the gh keyring token as GH_TOKEN (git push/pull and gh over HTTPS).
+
+[agents.claude-code]
+github_token = true
+paths = [
+  { path = "~/src/", access = "rwx" },
+  { path = "~/.agents/skills/", access = "rx" },
+]
+
+[agents.claude-desktop]
+github_token = true
+paths = [
+  { path = "~/src/", access = "rwx" },
+  { path = "~/.agents/skills/", access = "rx" },
+]

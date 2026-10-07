@@ -22,7 +22,8 @@ AppArmor. The guard has three goals:
 ```text
 claude / Desktop menu
   -> root-owned forwarder (~/.local/bin/claude, /usr/lib/claude-desktop/claude-desktop)
-  -> /usr/local/libexec/claude-guard (Python, runs as qiu)
+  -> /usr/local/libexec/harness-guard AGENT (Python, runs as qiu; how to run each
+     agent comes from /etc/harness-guard/agents/AGENT.toml)
        allowlisted environment, fetch GitHub token, close inherited descriptors,
        switch itself into the AppArmor profile, verify "(enforce)", set no_new_privs,
        enter a private mount namespace with its own /dev/pts (your other terminals
@@ -37,14 +38,18 @@ back to running unconfined.
 
 | Path | Installed as |
 | --- | --- |
-| `apparmor/abstractions/claude-guard` | `/etc/apparmor.d/abstractions/claude-guard`: rules shared by both guards |
-| `apparmor/claude-guard-launcher` | `/etc/apparmor.d/claude-guard-launcher`: entry profile so a launch from a terminal switches cleanly |
+| `apparmor/abstractions/harness-guard` | `/etc/apparmor.d/abstractions/harness-guard`: rules shared by every agent guard |
+| `apparmor/abstractions/harness-guard-claude` | `/etc/apparmor.d/abstractions/harness-guard-claude`: Claude's own state, shared by both Claude guards |
+| `apparmor/harness-guard-launcher` | `/etc/apparmor.d/harness-guard-launcher`: entry profile so a launch from a terminal switches cleanly |
 | `apparmor/claude-code-guard` | `/etc/apparmor.d/claude-code-guard` |
 | `apparmor/claude-desktop-guard` | `/etc/apparmor.d/claude-desktop-guard`: Desktop GUI, tray, portals, KWallet, Cowork |
-| `bin/claude-guard` | `/usr/local/libexec/claude-guard` |
-| `bin/xdg-open`, `bin/bwrap` | `/usr/local/libexec/claude-guard-bin/` (first in the guarded `PATH`) |
-| `etc/gitconfig` | `/etc/claude-guard/gitconfig` |
-| `etc/gtk.gschema.override` | compiled into `/etc/claude-guard/gtk-schemas/` |
+| `agents/*.toml` | `/etc/harness-guard/agents/`: how the launcher runs each agent |
+| `etc/policy.toml` | `/etc/harness-guard/policy.toml`, created once: your path choices per agent |
+| `bin/harness-guard` | `/usr/local/libexec/harness-guard`: the launcher |
+| `bin/harness-guard-apply` | `/usr/local/sbin/harness-guard-apply`: compiles the policy into `/etc/apparmor.d/harness-guard/` and reloads the profiles |
+| `bin/xdg-open`, `bin/bwrap` | `/usr/local/libexec/harness-guard-bin/` (first in the guarded `PATH`) |
+| `etc/gitconfig` | `/etc/harness-guard/gitconfig` |
+| `etc/gtk.gschema.override` | compiled into `/etc/harness-guard/gtk-schemas/` |
 
 `install.sh` also writes the two forwarders, keeps the packaged Desktop ELF diverted to
 `claude-desktop.real`, and sets up Cowork's `vhost_vsock` access. The CLI forwarder
@@ -55,9 +60,9 @@ it with an unconfined program; `install.sh uninstall` removes it.
 
 | | Access |
 | --- | --- |
-| `~/src/**` | read, write, execute (children stay confined) |
+| `~/src/**` | read, write, execute (children stay confined); from the policy |
+| `~/.agents/skills` | read and execute; from the policy |
 | `~/.claude*`, `~/.config/Claude` | read/write (application state) |
-| `~/.agents/skills` | read and execute |
 | `/usr/**`, NVM v22.23.2, `~/.cargo/bin`, `~/.rustup` | read and execute, no writes |
 | Caches and temp | private: `~/.cache/claude-guard`, `/tmp/claude-1000` |
 | GitHub | the launcher passes `GH_TOKEN` (from `gh auth token`); `gh` and git HTTPS use it |
@@ -89,10 +94,22 @@ sudo is denied, so Claude can propose changes here but cannot apply them.
 link into `~/.local/state/claude/guard-bin`, which the launcher shows as `~/.local/bin`.
 Desktop package updates go to the diverted `.real` file and need no action.
 
-**Adding a work area outside `~/src`:** add `owner /path/ r,` and `owner /path/** rwkmix,`
-to `apparmor/abstractions/claude-guard`, then run `install.sh`.
+**Choosing paths per agent:** edit the policy and apply it. Running agents get the new
+rules within a second, without a restart:
+
+```bash
+sudo -e /etc/harness-guard/policy.toml
+sudo harness-guard-apply
+```
+
+Each entry is a directory (ending in `/`) or a single file, with access `none`, `r`,
+`rx`, `rw` or `rwx`. `none` wins over any allow, so it carves a folder or file out of a
+wider grant. The compiler refuses globs, symlinks, grants covering your whole home
+folder, and write access to anything unguarded programs run or read config from
+(shell startup files, `~/.local/bin`, autostart, `~/.gitconfig`, `~/.agents`, ...).
+Keys, wallets and browser profiles stay denied whatever the policy says.
 **New Node version:** change the NVM path in the abstraction and `NODE` in
-`bin/claude-guard`.
+`bin/harness-guard`.
 
 ## Accepted limits
 

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Smoke test for both guards. Run as qiu from a normal terminal, after install.sh.
+# Smoke test for the agent guards. Run as qiu from a normal terminal, after install.sh.
 probe='
     ok() { echo "  ok    $1"; }
     bad() { echo "  FAIL  $1"; failed=1; }
@@ -44,6 +44,14 @@ echo "denials this boot (most frequent):"
 journalctl -k -b -q -g 'apparmor="DENIED".*profile="claude-' 2>/dev/null \
     | grep -oE 'profile="[^"]+".*' | sed -E 's/ (pid|fsuid|ouid|denied_mask|comm|requested|info|error|class)=[^ ]*//g' \
     | sort | uniq -c | sort -rn | head -n 15 | sed 's/^/  /'
+
+echo "policy:"
+[ "$(stat -c %u:%a /etc/harness-guard/policy.toml 2>/dev/null)" = 0:644 ] \
+    && echo "  ok    /etc/harness-guard/policy.toml root-owned" || { echo "  FAIL  policy.toml missing or not root-owned 644"; status=1; }
+compiled=$(/usr/local/sbin/harness-guard-apply --print 2>&1)
+loaded=$(for f in /etc/apparmor.d/harness-guard/*; do printf '== %s\n%s\n\n' "${f##*/}" "$(cat "$f")"; done)
+[ "$compiled" = "$loaded" ] && echo "  ok    loaded rules match the policy" \
+    || { echo "  FAIL  policy changed or invalid; run: sudo harness-guard-apply"; status=1; }
 
 echo "launcher:"
 claude --version >/dev/null && echo "  ok    claude --version through the launcher (clean label, private namespace)" \

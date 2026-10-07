@@ -47,47 +47,41 @@ restart, and open file descriptors are revalidated on next use. Only launcher-le
 settings (environment, which entry points are wrapped) take effect on the agent's
 next start, and the console says so next to those settings.
 
-## Pieces
+## Pieces (built)
 
 ```text
-agents/<id>.toml        reviewed, in this repo: how to detect, wrap and run one agent
+agents/<id>.toml        reviewed, in this repo: profile, program, environment, private binds
+apparmor/<profile>      reviewed, hand-written: the agent's own state, D-Bus, devices
 /etc/harness-guard/policy.toml
-                        root-owned: your choices per agent (paths r/w/x, GitHub token,
-                        microphone, KWallet, devices); never writable by any agent
-harness-guard compile   spec + policy -> /etc/apparmor.d/harness-<id>; apparmor_parser -Q
-                        to validate, then -r to apply live
-harness-guard run <id>  the generic launcher (today's bin/claude-guard): allowlisted env,
-                        changeprofile, verify enforce, no_new_privs, private namespace
-harness-guard-console   PyQt6 + Kirigami (both already installed as distro packages)
+                        root-owned: your choices per agent (paths none/r/rx/rw/rwx,
+                        GitHub token); never writable by any agent
+harness-guard-apply     policy -> /etc/apparmor.d/harness-guard/<id>, which each profile
+                        includes; validated, checked with apparmor_parser -Q, then -r live
+harness-guard <id>      the generic launcher: allowlisted env, changeprofile, verify
+                        enforce, no_new_privs, private namespace
 ```
 
-Agent spec example:
+Only the paths you choose are generated. Everything an agent needs to work (its state,
+D-Bus peers, devices) stays hand-written and reviewed, so a policy edit can't break an
+agent's basics or open a D-Bus service. The compiler rejects globs, quotes, symlinks,
+grants covering the whole home folder, and write grants overlapping anything unguarded
+programs execute or read config from.
+
+Policy example:
 
 ```toml
-id = "codex"
-detect = ["~/.codex/packages/standalone/current/bin/codex"]
-attach = "~/.codex/packages/standalone/releases/*/bin/codex"
-entry = { cli = "~/.local/bin/codex" }
-state = ["~/.codex/"]
-env = { CODEX_HOME = "~/.codex" }
-config = { file = "~/.codex/config.toml", set = { cli_auth_credentials_store = "file" } }
-```
-
-Policy example, the part you edit in the console:
-
-```toml
-[agents.codex]
-enabled = true
+[agents.claude-code]
+github_token = true
 paths = [
   { path = "~/src/", access = "rwx" },
   { path = "~/src/private-notes/", access = "none" },
   { path = "~/Documents/spec.pdf", access = "r" },
 ]
-github_token = false
 ```
 
-`access = "none"` compiles to `audit deny`, which wins over any allow, so a file can be
-carved out of an allowed directory.
+`access = "none"` compiles to `audit deny`, which wins over any allow. A single file
+granted `rw` can be edited in place, but editors that save through a temporary file and
+rename need the directory.
 
 ## Console
 
@@ -114,9 +108,13 @@ carved out of an allowed directory.
 
 ## Order of work
 
-1. Install and verify today's Claude fixes (private `/dev/pts`, check additions).
-2. Generalize: spec format, compiler and generic launcher, with Claude Code and
-   Desktop ported first. The compiled profiles must match today's hand-written ones.
-3. CLI agents: Codex, Grok, OpenCode, Copilot, `agy`, with a check per agent.
-4. Console UI.
-5. Opt-in IDE and desktop agents: ChatGPT/Codex app, Kiro, Antigravity, VS Code.
+Scope for now: Claude Code, Claude Desktop, the Antigravity IDE and the `agy` CLI.
+The other agents in the table stay unguarded until later.
+
+1. Done: Claude fixes (private `/dev/pts`, entry profile, check additions).
+2. Written, waiting for install: spec format, compiler and generic launcher, Claude ported. The expanded
+   profiles match the hand-written ones except the new names and an added deny for
+   `~/.local/share/{kwalletd,keyrings}`.
+3. Antigravity IDE and `agy`: survey (`tools/survey-antigravity.sh`), credentials
+   decision, profiles, checks.
+4. Console UI for the four agents.

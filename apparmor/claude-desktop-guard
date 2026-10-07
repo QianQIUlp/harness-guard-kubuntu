@@ -1,6 +1,6 @@
 # AppArmor guard for Claude Desktop. Installed as /etc/apparmor.d/claude-desktop-guard.
 # The packaged ELF is dpkg-diverted to claude-desktop.real; its original path is a
-# root-owned forwarder to /usr/local/libexec/claude-guard.
+# root-owned forwarder to /usr/local/libexec/harness-guard.
 # Portions adapted from roddhjav/apparmor.d f9ee26eb2d44db2a0ae0fd546cdd845f1bb86c2a
 # Copyright (C) 2024-2026 Alexandre Pujol <alexandre@pujol.io>
 # SPDX-License-Identifier: GPL-2.0-only
@@ -8,7 +8,9 @@ abi <abi/5.0>,
 include <tunables/global>
 
 profile claude-desktop-guard /usr/lib/claude-desktop/claude-desktop.real flags=(attach_disconnected) {
-  include <abstractions/claude-guard>
+  include <abstractions/harness-guard>
+  include <abstractions/harness-guard-claude>
+  include if exists <harness-guard/claude-desktop>
   include <abstractions/fonts>
   include <abstractions/dri-common>
   include <abstractions/dri-enumerate>

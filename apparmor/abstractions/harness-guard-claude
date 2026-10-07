@@ -1,0 +1,21 @@
+# Claude's own state, shared by claude-code-guard and claude-desktop-guard
+# (Desktop runs Claude Code sessions).
+
+  owner /home/qiu/.claude/ rw,
+  owner /home/qiu/.claude/** rwkmix,
+  owner /home/qiu/.claude.json{,.*} rwk,
+  owner /home/qiu/.claude.json.lock/{,**} rwk,
+  owner /home/qiu/.cache/claude-guard/{,**} rwkmix,
+  owner /tmp/claude-1000/{,**} rwkmix,
+
+  # Claude Code native installs and updates. Binaries in versions/ are attached to
+  # claude-code-guard, so writing them cannot create an unconfined program.
+  owner /home/qiu/.local/share/claude/versions/ rw,
+  owner /home/qiu/.local/share/claude/versions/** rwkmix,
+  owner /home/qiu/.local/state/claude/{,**} rwk,
+  owner /home/qiu/.local/bin/ r,
+  # Inside the launcher's private view this is ~/.local/state/claude/guard-bin; the
+  # host file is a root-owned, immutable forwarder.
+  owner /home/qiu/.local/bin/claude{,.tmp.*} rw,
+  /home/qiu/.local/bin/claude rix,
+  mount options in (rw,bind,silent) /home/qiu/.local/state/claude/guard-bin/ -> /home/qiu/.local/bin/,
