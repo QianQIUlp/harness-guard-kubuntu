@@ -1,0 +1,20 @@
+# How harness-guard runs the Antigravity app. Installed to /etc/harness-guard/agents/.
+# Paths may start with ~/ for /home/qiu/.
+profile = "antigravity-guard"
+exec = "/opt/antigravity/antigravity"
+# The app's cookies use a built-in key instead of KWallet, which the guard denies.
+args = ["--ozone-platform=wayland", "--disable-dev-shm-usage", "--password-store=basic"]
+cache = "~/.cache/antigravity-guard"
+tmp = "/tmp/antigravity-1000"
+keep_env = ["WAYLAND_DISPLAY", "XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"]
+
+[env]
+XDG_SESSION_TYPE = "wayland"
+XDG_CURRENT_DESKTOP = "KDE"
+KDE_SESSION_VERSION = "6"
+# Window buttons come from compiled defaults, not the user's dconf.
+GSETTINGS_BACKEND = "memory"
+GSETTINGS_SCHEMA_DIR = "/etc/harness-guard/gtk-schemas"
+GTK_USE_PORTAL = "1"
+PULSE_SERVER = "unix:/run/user/1000/pulse/native"
+PULSE_COOKIE = "~/.cache/antigravity-guard/pulse-cookie"

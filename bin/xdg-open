@@ -1,4 +1,50 @@
-#!/bin/sh
-# Open URLs and files through the desktop portal, so the browser or viewer
-# starts outside the guard instead of inheriting it.
-GIO_USE_PORTALS=1 exec /usr/bin/gio open "$@"
+#!/usr/bin/python3 -I
+"""Open URLs and files through the desktop portal, so the browser or viewer starts
+outside the guard instead of inheriting it. `gio open` is not enough: GLib starts the
+default app itself and asks the portal only if that fails, and the guard then denies
+the app (Edge, Firefox) after GLib has already reported success."""
+import os
+import sys
+from urllib.parse import unquote, urlparse
+
+import gi
+gi.require_version('Gio', '2.0')
+from gi.repository import Gio, GLib
+
+
+def main(args):
+    if len(args) != 1:
+        print('usage: xdg-open { file | URL }', file=sys.stderr)
+        return 1
+    target = args[0]
+    url = urlparse(target)
+    options = {}
+    if token := os.environ.get('XDG_ACTIVATION_TOKEN'):
+        options['activation_token'] = GLib.Variant('s', token)
+    fds = None
+    if url.scheme and url.scheme != 'file':
+        method, params = 'OpenURI', ('', target, options)
+    else:
+        path = unquote(url.path) if url.scheme else target
+        try:
+            fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
+        except OSError as error:
+            print(f'xdg-open: {path}: {error.strerror}', file=sys.stderr)
+            return 2
+        fds = Gio.UnixFDList.new_from_array([fd])
+        method = 'OpenDirectory' if os.path.isdir(path) else 'OpenFile'
+        params = ('', 0, options)
+    try:
+        Gio.bus_get_sync(Gio.BusType.SESSION).call_with_unix_fd_list_sync(
+            'org.freedesktop.portal.Desktop', '/org/freedesktop/portal/desktop',
+            'org.freedesktop.portal.OpenURI', method,
+            GLib.Variant(f'(s{"s" if fds is None else "h"}a{{sv}})', params),
+            None, Gio.DBusCallFlags.NONE, -1, fds)
+    except GLib.Error as error:
+        print(f'xdg-open: {error.message}', file=sys.stderr)
+        return 4
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

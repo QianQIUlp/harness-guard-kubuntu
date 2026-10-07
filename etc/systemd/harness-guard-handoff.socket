@@ -1,0 +1,13 @@
+# Lets Claude's guards start agy in agy-guard (bin/harness-guard-handoff). Installed to
+# /etc/systemd/user/ and enabled for qiu by install.sh. Only qiu can connect, and of the
+# guards only those with a rule for this path (harness-guard-claude).
+[Unit]
+Description=Hand-off between harness guards
+
+[Socket]
+ListenStream=%t/harness-guard-handoff.sock
+SocketMode=0600
+Accept=yes
+
+[Install]
+WantedBy=sockets.target

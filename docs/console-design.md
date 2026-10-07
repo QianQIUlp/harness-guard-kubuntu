@@ -116,23 +116,32 @@ The other agents in the table stay unguarded until later.
    profiles match the hand-written ones except the new names and an added deny for
    `~/.local/share/{kwalletd,keyrings}`.
 3. Antigravity app and `agy`. agy: done (`agy-guard`, file login, keyring denied),
-   installed and checked 2026-10-07. The app is next. Known so far:
-   - The app is an Electron build in `/opt/antigravity`, owned by qiu (not a package),
-     with a Go `language_server`; its browser agent drives `/opt/google/chrome`. State in
-     `~/.config/Antigravity` and `~/.cache/antigravity`; `antigravity://` links.
-   - `agy` 1.2.16 is a qiu-owned binary in `~/.local/bin` with `agy update`; state in
-     `~/.gemini` (`config/`, `antigravity-cli/`).
-   - The owner wants agy limited to its own credential. KWallet's Secret Service gives
-     items counter-based object paths (`<collection>/<n>`, renumbered on restart), and
-     `GetSecrets` takes any item list, so AppArmor D-Bus rules can't pin one entry.
-     Round 2 confirmed agy uses the Secret Service (`SearchItems` on the default alias
-     with `service=gemini`, then `GetSecret` on one item) and fails without it. agy
-     switches to file storage (`~/.gemini/antigravity-cli/antigravity-oauth-token`)
-     when it sees an SSH session (`SSH_CONNECTION` and similar, per
-     soyelmismo/hermes-antigravity-subscription#18 on 1.2.14). If that works on 1.2.16,
-     the agy guard sets it and denies the keyring; otherwise the owner accepts
-     Secret Service access for agy. Confirmed on 1.2.16: with the keyring
-     unreachable, a fresh `agy --print` used the file login.
-   - agy 1.0.x's container file storage was write-only
-     (google-antigravity/antigravity-cli#479), so test that a fresh process reads it.
+   installed and checked 2026-10-07. App: written (`antigravity-guard`), waiting for
+   install. From its code (2.19.1) and a runtime survey:
+   - Electron in qiu-owned `/opt/antigravity`, started by `/usr/local/bin/antigravity`
+     and `~/.local/share/applications/antigravity.desktop`. electron-updater picks the
+     AppImage updater (no `resources/package-type`), which is inactive without
+     `APPIMAGE`, so the guard keeps `/opt/antigravity` read-only.
+   - The app spawns `resources/bin/language_server` (`--app_data_dir antigravity`, so
+     `~/.gemini/antigravity`) with the login shell's environment (`shell-env`). The
+     language server shares agy's token code: Secret Service entry `service=gemini`
+     (it also calls `CreateItem`), or the file `jetski-standalone-oauth-token` in an
+     SSH session or when the keyring fails. `SSH_CONNECTION` also switches sign-in to
+     a paste-the-code flow (`TerminalTokenAcquirer`) that the app only logs, so the app
+     runs without it: the guard refuses the Secret Service quietly and the language
+     server falls back to its file, with the normal browser sign-in.
+   - The browser agent uses the app's own CDP port (`--remote-debugging-port=0`,
+     `DevToolsActivePort` in `~/.config/Antigravity`), not Chrome. Terminals are plain
+     bash; MCP servers run through nvm `npx` or `~/.config/Antigravity/bin/agy-node`
+     (`ELECTRON_RUN_AS_NODE`).
+   - D-Bus: the same tray, notification, portal and systemd-scope calls as Claude
+     Desktop, so both use `abstractions/harness-guard-electron` (Desktop's compiled
+     profile is byte-identical after the move).
+   - agy as Claude's subagent: a guard can't switch into another (`no_new_privs`; a
+     stacked label would only intersect both profiles), so the launcher hands the
+     request to `harness-guard-handoff`, a per-connection user socket service outside
+     the guards. It checks the caller's label (`SO_PEERSEC`) against agy's
+     `handoff_from`, takes the working directory as a descriptor the caller opened, and
+     runs the normal launcher. This is the one socket an agent can drive; it can only
+     start the listed agent in that agent's own guard.
 4. Console UI for the four agents.

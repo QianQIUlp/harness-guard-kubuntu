@@ -10,6 +10,10 @@ tmp = "/tmp/agy-1000"
 # host file stays a root-owned forwarder.
 binds = [["~/.local/state/agy/guard-bin", "~/.local/bin"]]
 
+# Claude's guards can't switch into agy-guard, so `agy` there asks harness-guard-handoff
+# to start it here (agy as a subagent). agy keeps its own guard and login.
+handoff_from = ["claude-code-guard", "claude-desktop-guard"]
+
 [env]
 # agy keeps its login in the Secret Service, which holds every app's secrets and can't
 # be limited to one entry. In an SSH session it uses its own file instead

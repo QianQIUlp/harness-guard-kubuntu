@@ -16,4 +16,5 @@ profile harness-guard-launcher /usr/local/libexec/harness-guard {
   change_profile -> claude-code-guard,
   change_profile -> claude-desktop-guard,
   change_profile -> agy-guard,
+  change_profile -> antigravity-guard,
 }

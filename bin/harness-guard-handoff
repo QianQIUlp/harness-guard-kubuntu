@@ -1,0 +1,101 @@
+#!/usr/bin/python3 -I
+"""Start an agent in its own guard for another guarded agent (agy as Claude's subagent).
+
+Installed as /usr/local/libexec/harness-guard-handoff and started by systemd for each
+connection to /run/user/1000/harness-guard-handoff.sock (harness-guard-handoff.socket).
+A guard can't switch into another one (no_new_privs), so inside a guard listed in the
+agent's handoff_from, harness-guard sends its arguments, working directory and standard
+streams here instead. This runs harness-guard as if qiu had started the agent from a
+terminal, so the agent gets only its own guard, and the caller never gets the agent's
+files or login. The caller gets the exit status back; if it goes away, the agent is
+stopped.
+"""
+import contextlib
+import json
+import os
+import re
+import select
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+UID = 1000
+LAUNCHER = '/usr/local/libexec/harness-guard'
+ETC = Path('/etc/harness-guard')
+
+
+def receive(conn):
+    """Length-prefixed JSON request with four descriptors: stdin, stdout, stderr, cwd."""
+    head, fds, _, _ = socket.recv_fds(conn, 4, 4)
+    if not head:
+        sys.exit(0)  # connected and left (tools/check.sh)
+    if len(fds) != 4 or len(head) != 4 or int.from_bytes(head, 'big') > 1 << 20:
+        raise RuntimeError('malformed request')
+    size = int.from_bytes(head, 'big')
+    body = conn.recv(size, socket.MSG_WAITALL)
+    if len(body) != size:
+        raise RuntimeError('malformed request')
+    return json.loads(body), fds
+
+
+def check(peer, request, cwd):
+    agent, args = request.get('agent'), request.get('args')
+    if not (isinstance(agent, str) and re.fullmatch(r'[a-z0-9-]+', agent)
+            and isinstance(args, list) and all(isinstance(a, str) for a in args)):
+        raise RuntimeError('malformed request')
+    spec = ETC / 'agents' / f'{agent}.toml'
+    allowed = tomllib.loads(spec.read_text()).get('handoff_from', ()) if spec.exists() else ()
+    if peer not in (profile + ' (enforce)' for profile in allowed):
+        raise RuntimeError(f'{peer} may not start {agent}')
+    # The caller opened the directory in its own mount namespace; use the same
+    # directory here, found by path and confirmed by inode.
+    path, mine = os.readlink(f'/proc/self/fd/{cwd}'), os.fstat(cwd)
+    try:
+        here = os.stat(path)
+    except OSError:
+        here = None
+    if not here or (here.st_dev, here.st_ino) != (mine.st_dev, mine.st_ino):
+        raise RuntimeError(f'working directory {path} is not available here')
+    return agent, args, path
+
+
+def main():
+    conn = socket.socket(fileno=0)  # StandardInput=socket
+    _, uid, _ = struct.unpack('3i', conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+    peer = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERSEC, 256).split(b'\0')[0].decode().strip()
+    request, (stdin, stdout, stderr, cwd) = receive(conn)
+    try:
+        if uid != UID:
+            raise RuntimeError(f'uid {uid} may not use the hand-off')
+        agent, args, path = check(peer, request, cwd)
+    except (OSError, RuntimeError, tomllib.TOMLDecodeError) as error:
+        print(f'refused: {error}', file=sys.stderr)
+        os.write(stderr, f'harness-guard-handoff: {error}\n'.encode())
+        conn.sendall((126).to_bytes(4, 'big', signed=True))
+        return
+    print(f'{peer} starts {agent} in {path} ({len(args)} arguments)', file=sys.stderr)
+    agent_process = subprocess.Popen([LAUNCHER, agent, *args], cwd=path, stdin=stdin,
+                                     stdout=stdout, stderr=stderr, start_new_session=True)
+    for fd in (stdin, stdout, stderr, cwd):
+        os.close(fd)
+    poll = select.poll()
+    poll.register(conn, select.POLLIN)
+    poll.register(os.pidfd_open(agent_process.pid), select.POLLIN)
+    while agent_process.poll() is None:
+        events = dict(poll.poll())
+        if conn.fileno() in events and not conn.recv(64):
+            print(f'caller left; stopping {agent}', file=sys.stderr)
+            with contextlib.suppress(ProcessLookupError, subprocess.TimeoutExpired):
+                os.killpg(agent_process.pid, signal.SIGTERM)
+                agent_process.wait(5)
+            return  # systemd stops whatever is left in this unit
+    code = agent_process.returncode
+    conn.sendall((code if code >= 0 else 128 - code).to_bytes(4, 'big', signed=True))
+
+
+if __name__ == '__main__':
+    main()

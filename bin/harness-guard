@@ -5,11 +5,15 @@ Installed as /usr/local/libexec/harness-guard and reached through root-owned
 forwarders, e.g. ~/.local/bin/claude runs `harness-guard claude-code "$@"`.
 How each agent runs comes from /etc/harness-guard/agents/AGENT.toml, and whether it
 gets the GitHub token from /etc/harness-guard/policy.toml. Fails closed if the
-agent's profile is missing or not enforcing.
+agent's profile is missing or not enforcing. Inside a guard listed in the agent's
+handoff_from, harness-guard-handoff starts the agent in its own guard instead (a
+guard can't switch into another one).
 """
 import ctypes
+import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tomllib
@@ -20,6 +24,7 @@ UID = 1000
 NODE = HOME / '.nvm/versions/node/v22.23.2'
 GUARD_BIN = '/usr/local/libexec/harness-guard-bin'
 ETC = Path('/etc/harness-guard')
+HANDOFF = f'/run/user/{UID}/harness-guard-handoff.sock'
 
 KEEP = ('TERM', 'COLORTERM', 'LANG', 'LC_ALL', 'LC_CTYPE', 'NO_COLOR', 'GH_HOST',
         'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
@@ -89,6 +94,33 @@ def confine(profile):
         raise OSError(ctypes.get_errno(), 'PR_SET_NO_NEW_PRIVS failed')
 
 
+def handoff(agent, args):
+    """Ask harness-guard-handoff to start the agent in its own guard here, and wait.
+    It gets this directory (opened here, so this guard must be able to read it) and
+    the standard streams, but never a terminal: a terminal handle could type into it."""
+    streams = []
+    for fd in (0, 1, 2):
+        if os.isatty(fd):
+            if fd:
+                raise RuntimeError(f'{agent} started from another guard needs its output '
+                                   f'redirected, e.g. `{agent} ... | cat`')
+            fd = os.open('/dev/null', os.O_RDONLY)
+        streams.append(fd)
+    request = json.dumps({'agent': agent, 'args': args}).encode()
+    try:
+        cwd = os.open('.', os.O_RDONLY | os.O_DIRECTORY)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.connect(HANDOFF)
+            socket.send_fds(conn, [len(request).to_bytes(4, 'big') + request], [*streams, cwd])
+            status = conn.recv(4, socket.MSG_WAITALL)
+    except OSError as error:
+        raise RuntimeError(f'cannot hand {agent} off ({error.strerror or error}); '
+                           'is harness-guard-handoff.socket running?') from None
+    if len(status) != 4:
+        raise RuntimeError(f'harness-guard-handoff stopped before {agent} finished')
+    return int.from_bytes(status, 'big', signed=True)
+
+
 def mount(source, target, fstype=None, flags=0, data=None):
     if libc.mount(source, str(target).encode(), fstype, flags, data) != 0:
         raise OSError(ctypes.get_errno(), f'cannot mount {source.decode()} on {target}')
@@ -128,6 +160,8 @@ def main():
     if agent not in specs:
         raise RuntimeError(f'unknown agent {agent}')
     spec = specs[agent]
+    if label() in (profile + ' (enforce)' for profile in spec.get('handoff_from', ())):
+        sys.exit(handoff(agent, args))
     if label() in (s['profile'] + ' (enforce)' for s in specs.values()):
         env = dict(os.environ)  # already guarded (e.g. Desktop starting the CLI): keep SDK IPC
     else:

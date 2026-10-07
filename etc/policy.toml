@@ -32,3 +32,10 @@ paths = [
   { path = "~/src/", access = "rwx" },
   { path = "~/.agents/skills/", access = "rx" },
 ]
+
+[agents.antigravity]
+github_token = true
+paths = [
+  { path = "~/src/", access = "rwx" },
+  { path = "~/.agents/skills/", access = "rx" },
+]

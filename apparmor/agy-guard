@@ -9,6 +9,11 @@ profile agy-guard /home/qiu/.local/state/agy/guard-bin/agy flags=(attach_disconn
   include <abstractions/harness-guard-antigravity>
   include if exists <harness-guard/agy>
 
+  # The launcher makes agy keep its login in this folder; it never asks the Secret
+  # Service, so an attempt is worth logging.
+  audit deny dbus send bus=session peer=(name=org.freedesktop.secrets),
+  owner /home/qiu/.gemini/antigravity-cli/ rw,
+  owner /home/qiu/.gemini/antigravity-cli/** rwkmix,
   owner /home/qiu/.cache/agy-guard/{,**} rwkmix,
   owner /tmp/agy-1000/{,**} rwkmix,
 

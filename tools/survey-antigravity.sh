@@ -1,62 +1,64 @@
 #!/bin/sh
-# One-off, read-only survey for writing the Antigravity and agy guards (round 2):
-# where they keep their login, how they update, and how the app is installed.
-# Run as qiu from Konsole (not from Antigravity's own terminal), with the Antigravity
-# app open. Prints names, paths, owners and D-Bus method names only: no file
-# contents, tokens or secret values. It runs `agy models` twice (once with the keyring
-# unreachable); if agy is not logged in that way, it may open a login page: close it.
-out=/tmp/claude-1000/antigravity-survey-2.txt
-agy=$HOME/.local/bin/agy
+# One-off survey for writing the Antigravity app guard (round 3). Run as qiu from
+# Konsole with the Antigravity app closed. It copies the app's own code (app.asar, which
+# holds no user data) and the strings of its language_server to /tmp/claude-1000, then
+# starts the app and records what it does: processes and flag names, environment
+# variable names, D-Bus method names, listening ports and the paths it writes. No file
+# contents, tokens or secret values are saved.
+dir=/tmp/claude-1000/antigravity-3
+out=$dir/survey.txt
+app=/opt/antigravity
 mask() { sed -E 's/[A-Za-z0-9_.+=-]{32,}/<long>/g'; }
+if pgrep -f "^$app/" >/dev/null; then
+    echo "Quit Antigravity first (File > Quit), then run this again." >&2
+    exit 1
+fi
+mkdir -p "$dir"
+if [ ! -s "$dir/language_server.strings" ]; then
+echo "Copying the app's code..."
+python3 - "$app/resources/app.asar" "$dir/app" <<'EOF'
+import json, os, struct, sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src, 'rb') as f:
+    size = struct.unpack('<I', f.read(8)[4:])[0]
+    header = f.read(size)
+    tree = json.loads(header[8:8 + struct.unpack('<I', header[4:8])[0]])
+    base = 8 + size
+    def walk(node, path):
+        for name, entry in node.get('files', {}).items():
+            p = os.path.join(path, name)
+            if 'files' in entry:
+                walk(entry, p)
+            elif 'offset' in entry and not entry.get('unpacked'):
+                os.makedirs(path, exist_ok=True)
+                f.seek(base + int(entry['offset']))
+                with open(p, 'wb') as o:
+                    o.write(f.read(entry['size']))
+    walk(tree, dst)
+EOF
+strings -n 6 "$app/resources/bin/language_server" > "$dir/language_server.strings"
+fi
+
 {
 echo "== install"
-readlink -f /usr/local/bin/antigravity
-dpkg -S /opt/antigravity/antigravity /usr/share/applications/antigravity.desktop 2>&1
-ls -la /opt/antigravity/resources /opt/antigravity/bin 2>&1
-find /opt/antigravity/resources -maxdepth 2 \( -name '*.yml' -o -name '*.json' -o -name '*.asar' \) \
-    -printf '%u %s %p\n'
-for f in $(find /opt/antigravity/resources -maxdepth 3 \( -name product.json -o -name package.json \)); do
-    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sys.argv[1], {k: d.get(k) for k in ("name","version","main","updateUrl","quality","dataFolderName","urlProtocol") if k in d})' "$f"
+cat "$app/resources/app-update.yml"
+find "$app" -maxdepth 1 -printf '%u %m %p\n'
+find "$app/resources" -printf '%u %m %s %p\n' | grep -v "^[^ ]* [^ ]* [^ ]* $app/resources/app.asar.unpacked/.*/.*/.*/" | head -n 60
+ls -la /usr/local/bin/antigravity "$HOME/.config/Antigravity/bin" 2>&1
+sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone 2>&1
+echo "-- state folders (names only)"
+for d in "$HOME/.config/Antigravity" "$HOME/.cache/antigravity" "$HOME/.gemini" "$HOME/.local/share/antigravity" "$HOME/.antigravity"; do
+    [ -e "$d" ] && find "$d" -maxdepth 2 -printf '%y %p\n' | grep -v "^. $HOME/.gemini/config/skills/" | head -n 60
 done
-grep -hE '^(Name|Exec|MimeType)=' /usr/share/applications/antigravity*.desktop
-echo "-- update and secret-storage code in the app"
-grep -rhoE 'electron-updater|autoUpdater\.[a-zA-Z]+|safeStorage\.[a-zA-Z]+|keytar|password-store' \
-    /opt/antigravity/resources 2>/dev/null | sort | uniq -c
+find "$HOME/.gemini/antigravity" -maxdepth 1 -printf '%y %m %p\n'
+} 2>&1 | mask > "$out"
 
-echo "== app processes (flags only)"
-for p in $(pgrep -f '^/opt/antigravity/'); do
-    tr '\0' '\n' < "/proc/$p/cmdline" | grep -oE '^--(type|password-store|user-data-dir|ozone-platform)(=[^ ]*)?'
-done | sort | uniq -c
-echo "-- Chrome processes: parent and profile dir"
-for p in $(pgrep -x chrome); do
-    echo "$(readlink "/proc/$(ps -o ppid= -p "$p" | tr -d ' ')/exe") $(tr '\0' '\n' < "/proc/$p/cmdline" | grep -oE '^--user-data-dir=.*')"
-done | sort | uniq -c
-echo "-- agy-node launcher"
-cat "$HOME/.config/Antigravity/bin/agy-node"
-echo "-- key names in app and CLI settings"
-for f in "$HOME/.config/Antigravity/Local State" "$HOME/.config/Antigravity/app_storage.json" \
-         "$HOME/.gemini/config/config.json"; do
-    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sys.argv[1], {k: sorted(v) if isinstance(v, dict) else type(v).__name__ for k, v in d.items()})' "$f" 2>&1
-done
-find "$HOME/.cache/antigravity" -maxdepth 2 -printf '%y %u %10s %p\n' | head -n 40
-
-echo "== agy: credential storage and updates named in the binary"
-strings -n 6 "$agy" | grep -oiE 'org\.freedesktop\.[Ss]ecret[A-Za-z.]*|org\.kde\.kwallet[A-Za-z0-9.]*|github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]*(keyring|keychain|secret|wallet|dbus)[A-Za-z0-9_./-]*|oauth_creds[A-Za-z0-9_.]*|[a-z_]*credentials?\.json|[a-z_]*token[a-z_]*\.json|(no|fallback|file)[a-z ]{0,12}keyring[A-Za-z _-]{0,40}|plaintext[A-Za-z _-]{0,30}' \
-    | sort | uniq -c | sort -rn | head -n 60
-"$agy" help update 2>&1 | head -n 20
-"$agy" help install 2>&1 | head -n 20
-echo "-- keyring messages in agy's logs"
-grep -ohiE '(keyring|secret service|credential|keychain)[^"]{0,80}' "$HOME"/.gemini/antigravity-cli/log/*.log \
-    | mask | sort | uniq -c | sort -rn | head -n 20
-
-echo "== D-Bus keyring calls while agy starts (method names and paths only)"
-touch /tmp/claude-1000/survey-marker
-python3 - "$agy" <<'EOF'
-import json, os, subprocess, sys, threading, time
-agy = sys.argv[1]
-names = ['org.freedesktop.secrets', 'org.kde.kwalletd6', 'org.kde.kwalletd5', 'org.kde.secretservicecompat']
-mon = subprocess.Popen(['busctl', '--user', '--json=short', 'monitor', *names],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+touch "$dir/marker"
+python3 - "$app" "$dir" <<'EOF' 2>&1 | mask >> "$out"
+import json, os, re, subprocess, sys, threading, time
+app, dir = sys.argv[1], sys.argv[2]
+mon = subprocess.Popen(['busctl', '--user', '--json=short', 'monitor'],
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
 seen, exes = {}, {}
 
 def exe(name):
@@ -70,47 +72,121 @@ def exe(name):
             exes[name] = '?'
     return exes[name]
 
+def generic(path):
+    return re.sub(r'/(_?[0-9a-f_]{6,}|[0-9]+|_[0-9_]+)(?=/|$)', '/<n>', path or '')
+
 def read():
-    for line in mon.stdout:  # secret values in replies are never printed or stored
+    for line in mon.stdout:  # secret values in payloads are never printed or stored
         try:
             m = json.loads(line)
         except ValueError:
             continue
-        if m.get('type') == 'error':
-            key = ('error', m.get('error_name'))
-        elif m.get('type') == 'method_call' and m.get('destination') in names:
-            extra = ''
-            if m.get('member') == 'SearchItems':
-                data = m.get('payload', {}).get('data', [{}])[0]
-                attrs = dict(data) if isinstance(data, dict) else {}
-                extra = f" keys={sorted(attrs)} " + str({k: attrs[k] for k in ('service', 'application', 'xdg:schema') if k in attrs})
-            key = (exe(m.get('sender', '')), m.get('destination'), m.get('interface'), m.get('member'), m.get('path') + extra)
-        else:
+        if m.get('type') != 'method_call':
             continue
+        src, dst = exe(m.get('sender', '')), exe(m.get('destination', ''))
+        if not (src.startswith(app) or dst.startswith(app)):
+            continue
+        extra = ''
+        data = m.get('payload', {}).get('data', [])
+        if m.get('member') == 'SearchItems' and data and isinstance(data[0], dict):
+            extra = ' ' + str({k: data[0][k] for k in ('service', 'application', 'xdg:schema') if k in data[0]}) + f' keys={sorted(data[0])}'
+        elif m.get('interface') == 'org.kde.KWallet' and not m.get('member', '').startswith('write'):
+            extra = ' ' + str([d for d in data if isinstance(d, str)])
+        name = m.get('destination', '')
+        key = (src, '->', dst, '' if name.startswith(':') else name,
+               m.get('interface'), m.get('member'), generic(m.get('path')) + extra)
         seen[key] = seen.get(key, 0) + 1
 
 threading.Thread(target=read, daemon=True).start()
 time.sleep(1)
-env = dict(os.environ, AGY_CLI_DISABLE_AUTO_UPDATE='1')
-r = subprocess.run(['timeout', '20', agy, 'models'], stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env)
-print(f'agy models: exit {r.returncode}, {len(r.stdout.splitlines())} lines of output')
-time.sleep(2)
+subprocess.Popen(['setsid', f'{app}/antigravity'], stdin=subprocess.DEVNULL,
+                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+with open('/dev/tty', 'w') as tty:  # stdin is this script, stdout goes to the file
+    tty.write('''
+Antigravity is starting. In it:
+  1. Open (or create) a project under ~/src.
+  2. Ask its agent to run `ls` in a terminal, then to open https://example.com in its browser.
+  3. Wait until it has done both, leave the app open, and press Enter here.
+''')
+with open('/dev/tty') as tty:
+    tty.readline()
+
+def tree():
+    procs = {}
+    for p in os.listdir('/proc'):
+        try:
+            stat = open(f'/proc/{p}/stat').read()
+            procs[int(p)] = int(stat.rsplit(')', 1)[1].split()[1])
+        except Exception:
+            pass
+    roots = {p for p in procs if os.path.realpath(f'/proc/{p}/exe').startswith(app)}
+    found, grew = set(roots), True
+    while grew:
+        new = {p for p, pp in procs.items() if pp in found} - found
+        found |= new
+        grew = bool(new)
+    return procs, found
+
+procs, found = tree()
+print('== processes started by the app: exe, parent exe, label, flags (values only for some)')
+keep = ('type', 'user-data-dir', 'ozone-platform', 'password-store', 'remote-debugging-port', 'app_data_dir',
+        'enable-features', 'disable-features', 'utility-sub-type', 'gemini_dir', 'extension_server_port')
+rows, envs = {}, {}
+for p in sorted(found):
+    try:
+        e = os.path.realpath(f'/proc/{p}/exe')
+        pe = os.path.realpath(f'/proc/{procs[p]}/exe')
+        label = open(f'/proc/{p}/attr/current').read().strip()
+        args = open(f'/proc/{p}/cmdline').read().split('\0')[1:]
+        names = [kv.split('=', 1)[0] for kv in open(f'/proc/{p}/environ').read().split('\0') if kv]
+    except Exception:
+        continue
+    flags = []
+    for a in args:
+        m = re.match(r'--?([A-Za-z0-9_-]+)(=(.*))?', a)
+        if m:
+            flags.append(m.group(1) + (f'={m.group(3)}' if m.group(3) and m.group(1) in keep else ''))
+        elif a.startswith('/'):
+            flags.append('<path>' + a)
+    rows.setdefault((e, pe, label, ' '.join(flags)), 0)
+    rows[(e, pe, label, ' '.join(flags))] += 1
+    envs.setdefault(e, set()).update(names)
+for (e, pe, label, flags), n in sorted(rows.items()):
+    print(n, e, '<-', pe, f'[{label}]', flags)
+print('-- environment variable names by program (beyond the Konsole session)')
+base = set(os.environ)
+for e, names in sorted(envs.items()):
+    print(e, sorted(names - base))
+print('-- Chrome browsers running now: parent exe, flags')
+for p in sorted(procs):
+    try:
+        if os.path.realpath(f'/proc/{p}/exe').startswith('/opt/google/chrome/'):
+            args = open(f'/proc/{p}/cmdline').read().split('\0')
+            if not any(a.startswith('--type=') for a in args):
+                print(os.path.realpath(f'/proc/{procs[p]}/exe'), [re.sub(r'=(?!/).*', '=', a) for a in args[1:] if a.startswith('-')])
+    except Exception:
+        pass
+print('-- listening sockets of the app')
+for cmd in (['ss', '-ltnpH'], ['ss', '-lxpH']):
+    for line in subprocess.run(cmd, capture_output=True, text=True).stdout.splitlines():
+        if any(f'pid={p},' in line for p in found):
+            print(' ', re.sub(r'\s+', ' ', line))
+
 mon.terminate()
 time.sleep(0.5)
-if mon.stderr and (err := mon.stderr.read().strip()):
-    print('busctl:', err[:200])
-for key, count in sorted(seen.items(), key=str):
+print('== D-Bus method calls to or from the app (program -> program, name, interface, member, path)')
+for key, count in sorted(list(seen.items()), key=str):
     print(count, *key)
-
-print('-- same, with the keyring unreachable')
-env['DBUS_SESSION_BUS_ADDRESS'] = 'unix:path=/nonexistent'
-r = subprocess.run(['timeout', '20', agy, 'models'], stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env)
-print(f'agy models: exit {r.returncode}, {len(r.stdout.splitlines())} lines of output')
-for line in r.stderr.splitlines()[:8]:
-    print('  stderr:', line[:160])
 EOF
-echo "-- files agy changed during the test"
-find "$HOME/.gemini" "$HOME/.config/Antigravity" "$HOME/.cache/antigravity" -newer /tmp/claude-1000/survey-marker \
-    -type f -printf '%s %p\n' 2>/dev/null | head -n 30
-} 2>&1 | sed -E 's/[A-Za-z0-9_.+=-]{48,}/<long>/g' | tee "$out"
-echo "Saved to $out"
+
+{
+echo "== paths written since the app started, grouped (count, folder)"
+find "$HOME" /tmp /run/user/1000 -xdev -newer "$dir/marker" \( -type f -o -type s \) 2>/dev/null \
+    | grep -vE "^($dir|/tmp/claude-1000/|$HOME/\.cache/claude|$HOME/\.claude|$HOME/\.config/Claude/)" \
+    | sed -E "s#^($HOME/[^/]+/[^/]+/[^/]+|/tmp/[^/]+|/run/user/1000/[^/]+).*#\1#" | sort | uniq -c | sort -rn | head -n 50
+echo "-- key names in app settings now"
+for f in "$HOME/.config/Antigravity/Local State" "$HOME/.config/Antigravity/app_storage.json"; do
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sys.argv[1], {k: sorted(v) if isinstance(v, dict) else type(v).__name__ for k, v in d.items()})' "$f" 2>&1
+done
+} 2>&1 | mask >> "$out"
+echo "Saved to $dir (survey.txt, app/, language_server.strings). You can leave Antigravity open."

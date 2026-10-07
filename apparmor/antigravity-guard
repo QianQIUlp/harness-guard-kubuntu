@@ -1,0 +1,35 @@
+# Guard for the Antigravity app. /usr/local/bin/antigravity and the desktop entry go
+# through harness-guard (see agents/antigravity.toml); the profile also attaches to the
+# app binary, so running it directly is still confined. /opt/antigravity belongs to qiu
+# but stays read-only here: the app's updater is inactive for this install, and new
+# versions are installed outside the guard.
+abi <abi/5.0>,
+include <tunables/global>
+
+profile antigravity-guard /opt/antigravity/antigravity flags=(attach_disconnected) {
+  include <abstractions/harness-guard>
+  include <abstractions/harness-guard-antigravity>
+  include if exists <harness-guard/antigravity>
+  include <abstractions/harness-guard-electron>
+
+  /opt/antigravity/ r,
+  /opt/antigravity/** rm,
+  /opt/antigravity/{antigravity,chrome_crashpad_handler} ix,
+  /opt/antigravity/resources/bin/{language_server,webm_encoder} ix,
+
+  # Electron settings and caches; bin/agy-node runs the app as Node for MCP servers.
+  owner /home/qiu/.config/Antigravity/ rw,
+  owner /home/qiu/.config/Antigravity/** rwkmix,
+  # The language server: conversations, browser recordings and its login file. It asks
+  # the Secret Service first on every start, is refused and falls back to the file, so
+  # the refusal is not logged.
+  deny dbus send bus=session peer=(name=org.freedesktop.secrets),
+  owner /home/qiu/.gemini/antigravity/ rw,
+  owner /home/qiu/.gemini/antigravity/** rwkmix,
+  # The OpenTelemetry thread tries to lock its own /proc files every minute; the lock
+  # does nothing for /proc, so it is refused without logging.
+  deny owner /proc/@{pid}/{,task/@{tid}/}{stat,status,cmdline} k,
+  owner /home/qiu/.cache/antigravity-guard/{,**} rwkmix,
+  owner /home/qiu/.cache/antigravity-guard/** l,
+  owner /tmp/antigravity-1000/{,**} rwkmix,
+}

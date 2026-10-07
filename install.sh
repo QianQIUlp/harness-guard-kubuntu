@@ -14,7 +14,11 @@ CLI_ENTRY=/home/qiu/.local/bin/claude
 VERSIONS=/home/qiu/.local/share/claude/versions
 AGY_ENTRY=/home/qiu/.local/bin/agy
 AGY_BIN=/home/qiu/.local/state/agy/guard-bin
-PROFILES="claude-code-guard claude-desktop-guard agy-guard"
+CLAUDE_BIN=/home/qiu/.local/state/claude/guard-bin
+APP=/opt/antigravity/antigravity
+APP_ENTRY=/usr/local/bin/antigravity
+APP_DESKTOP=/home/qiu/.local/share/applications/antigravity.desktop
+PROFILES="claude-code-guard claude-desktop-guard agy-guard antigravity-guard"
 
 [ "$(id -u)" = 0 ] || { echo "Run with sudo." >&2; exit 1; }
 for profile in $PROFILES; do
@@ -23,6 +27,11 @@ for profile in $PROFILES; do
         exit 1
     fi
 done
+
+# qiu's own service manager, for the running session.
+user_systemctl() {
+    runuser -u qiu -- env XDG_RUNTIME_DIR=/run/user/1000 systemctl --user "$@"
+}
 
 # Root-owned file the user (and therefore no agent) can replace: put PATH MODE CONTENT
 put() {
@@ -40,11 +49,12 @@ install)
     done
 
     install -m 644 -D -t /etc/apparmor.d/abstractions apparmor/abstractions/harness-guard \
-        apparmor/abstractions/harness-guard-claude apparmor/abstractions/harness-guard-antigravity
+        apparmor/abstractions/harness-guard-claude apparmor/abstractions/harness-guard-antigravity \
+        apparmor/abstractions/harness-guard-electron
     for profile in harness-guard-launcher $PROFILES; do
         install -m 644 "apparmor/$profile" /etc/apparmor.d/
     done
-    install -m 755 bin/harness-guard "$LIBEXEC/harness-guard"
+    install -m 755 bin/harness-guard bin/harness-guard-handoff "$LIBEXEC/"
     install -m 755 -D -t "$LIBEXEC/harness-guard-bin" bin/xdg-open bin/bwrap
     install -m 755 bin/harness-guard-apply /usr/local/sbin/harness-guard-apply
     install -m 644 -D -t /etc/harness-guard/agents agents/*.toml
@@ -84,6 +94,27 @@ exec /usr/local/libexec/harness-guard claude-code "$@"'
         put "$AGY_ENTRY" 755 '#!/bin/sh
 exec /usr/local/libexec/harness-guard agy "$@"'
         chattr +i "$AGY_ENTRY"
+        # agy as Claude's subagent: Claude Code's private ~/.local/bin gets the same
+        # forwarder, and the hand-off socket starts agy in agy-guard for it.
+        install -d -o qiu -g qiu -m 700 /home/qiu/.local/state/claude "$CLAUDE_BIN"
+        put "$CLAUDE_BIN/agy" 755 '#!/bin/sh
+exec /usr/local/libexec/harness-guard agy "$@"'
+        chattr +i "$CLAUDE_BIN/agy"
+        install -m 644 -t /etc/systemd/user etc/systemd/harness-guard-handoff.socket \
+            etc/systemd/harness-guard-handoff@.service
+        systemctl --global enable harness-guard-handoff.socket
+        user_systemctl daemon-reload && user_systemctl start harness-guard-handoff.socket ||
+            echo "Log out and in again to start the agy hand-off."
+    fi
+
+    # Antigravity app: the command and the menu entry go through the launcher.
+    if [ -f "$APP" ]; then
+        put "$APP_ENTRY" 755 '#!/bin/sh
+exec /usr/local/libexec/harness-guard antigravity "$@"'
+        if [ -f "$APP_DESKTOP" ]; then
+            sed -i "s|^Exec=$APP\( %U\)\?\$|Exec=$APP_ENTRY %U|" "$APP_DESKTOP"
+            chown qiu:qiu "$APP_DESKTOP"
+        fi
     fi
 
     [ "$(dpkg-divert --truename "$DESKTOP")" != "$DESKTOP" ] ||
@@ -116,10 +147,25 @@ uninstall)
     ln -s "$version" "$CLI_ENTRY"
     chown -h qiu:qiu "$CLI_ENTRY"
 
+    user_systemctl stop harness-guard-handoff.socket 2>/dev/null || true
+    systemctl --global disable harness-guard-handoff.socket 2>/dev/null || true
+    rm -f /etc/systemd/user/harness-guard-handoff.socket /etc/systemd/user/harness-guard-handoff@.service
+    user_systemctl daemon-reload 2>/dev/null || true
+    chattr -i "$CLAUDE_BIN/agy" 2>/dev/null || true
+    rm -f "$CLAUDE_BIN/agy"
     if [ -f "$AGY_BIN/agy" ]; then
         chattr -i "$AGY_ENTRY" 2>/dev/null || true
         rm -f "$AGY_ENTRY"
         mv "$AGY_BIN/agy" "$AGY_ENTRY"
+    fi
+
+    if [ -f "$APP" ]; then
+        rm -f "$APP_ENTRY"
+        ln -s "$APP" "$APP_ENTRY"
+        if [ -f "$APP_DESKTOP" ]; then
+            sed -i "s|^Exec=$APP_ENTRY %U\$|Exec=$APP|" "$APP_DESKTOP"
+            chown qiu:qiu "$APP_DESKTOP"
+        fi
     fi
 
     rm -f "$DESKTOP"
@@ -130,8 +176,8 @@ uninstall)
         rm -f "/etc/apparmor.d/$profile"
     done
     rm -f /etc/apparmor.d/abstractions/harness-guard /etc/apparmor.d/abstractions/harness-guard-claude \
-          /etc/apparmor.d/abstractions/harness-guard-antigravity \
-          "$LIBEXEC/harness-guard" /usr/local/sbin/harness-guard-apply \
+          /etc/apparmor.d/abstractions/harness-guard-antigravity /etc/apparmor.d/abstractions/harness-guard-electron \
+          "$LIBEXEC/harness-guard" "$LIBEXEC/harness-guard-handoff" /usr/local/sbin/harness-guard-apply \
           /etc/modules-load.d/claude-cowork.conf /etc/udev/rules.d/70-claude-vhost-vsock.rules
     rm -rf /etc/apparmor.d/harness-guard "$LIBEXEC/harness-guard-bin" /etc/harness-guard/agents \
            /etc/harness-guard/gitconfig /etc/harness-guard/gtk-schemas

@@ -19,3 +19,9 @@
   owner /home/qiu/.local/bin/claude{,.tmp.*} rw,
   /home/qiu/.local/bin/claude rix,
   mount options in (rw,bind,silent) /home/qiu/.local/state/claude/guard-bin/ -> /home/qiu/.local/bin/,
+
+  # agy as a subagent: ~/.local/bin/agy (a root-owned forwarder, also in the private
+  # view) runs the launcher, which hands the request to harness-guard-handoff. agy runs
+  # in agy-guard; its files and login stay unreadable here.
+  /home/qiu/.local/bin/agy rix,
+  owner /run/user/1000/harness-guard-handoff.sock rw,

@@ -1,6 +1,9 @@
-# Antigravity's own state, shared by its guards: settings, plugins, MCP servers,
-# conversations and agy's login file. Keyring access stays denied.
+# Antigravity settings shared by the app and agy: plugins, skills, MCP servers and
+# projects. Each guard adds its own folder (logins, conversations) and its Secret
+# Service rule. KWallet stays denied, and attempts are logged.
 
   owner /home/qiu/.gemini/ r,
-  owner /home/qiu/.gemini/{config,antigravity-cli}/ rw,
-  owner /home/qiu/.gemini/{config,antigravity-cli}/** rwkmix,
+  owner /home/qiu/.gemini/config/ rw,
+  owner /home/qiu/.gemini/config/** rwkmix,
+
+  audit deny dbus send bus=session peer=(name=org.kde.kwalletd6),
