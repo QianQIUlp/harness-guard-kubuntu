@@ -2,13 +2,18 @@
 """Compile the owner's policy into AppArmor rules and apply them to running agents.
 
   sudo harness-guard-apply            compile /etc/harness-guard/policy.toml, check, load
-  harness-guard-apply --print [FILE]  only print the rules a policy compiles to
+  harness-guard-apply --print [FILE]  only print the rules a policy compiles to (- reads stdin)
+  harness-guard-apply --replace SHA256
+                                      as root: install the policy read from stdin, then
+                                      apply it; refused unless the current policy.toml
+                                      has that SHA-256 (the console runs this via pkexec)
 
 Installed as /usr/local/sbin/harness-guard-apply. Each agent's rules go to
 /etc/apparmor.d/harness-guard/ID, which its profile includes. Replacing a loaded
 profile switches running processes to the new rules, so no restart is needed.
 """
 import difflib
+import hashlib
 import os
 import re
 import subprocess
@@ -111,17 +116,21 @@ def compile_policy(policy, agents):
     return out
 
 
-def load(policy_file):
+def load(text):
     agents = {p.stem: tomllib.loads(p.read_text()) for p in (ETC / 'agents').glob('*.toml')}
-    return compile_policy(tomllib.loads(Path(policy_file).read_text()), agents), agents
+    return compile_policy(tomllib.loads(text), agents), agents
 
 
-def apply():
+def apply(replace=None):
+    """Load the installed policy, or (expected SHA-256, text) to install a new one first."""
     policy_file = ETC / 'policy.toml'
     st = policy_file.stat()
     if st.st_uid != 0 or st.st_mode & 0o022:
         raise PolicyError(f'{policy_file} must be owned by root and writable only by root')
-    compiled, agents = load(policy_file)
+    current = policy_file.read_bytes()
+    if replace and hashlib.sha256(current).hexdigest() != replace[0]:
+        raise PolicyError(f'{policy_file} changed since it was read; reload and try again')
+    compiled, agents = load(replace[1] if replace else current.decode())
     profiles = [APPARMOR / agents[a]['profile'] for a in compiled]
     for agent, text in compiled.items():
         old = (OUT / agent).read_text() if (OUT / agent).exists() else ''
@@ -133,6 +142,13 @@ def apply():
             (Path(tmp) / 'harness-guard' / agent).write_text(text)
         for profile in profiles:  # the new rules must parse with every profile before any is loaded
             subprocess.run([PARSER, '-Q', '-K', '-I', tmp, '-I', str(APPARMOR), str(profile)], check=True)
+    if replace:  # checked above; keep the previous policy next to it
+        for path, data in ((policy_file.with_suffix('.toml.bak'), current),
+                           (policy_file, replace[1].encode())):
+            new = ETC / '.policy.toml.new'
+            new.write_bytes(data)
+            new.chmod(0o644)
+            new.replace(path)
     OUT.mkdir(mode=0o755, exist_ok=True)
     for agent, text in compiled.items():
         new = OUT / f'.{agent}.new'
@@ -146,12 +162,20 @@ def apply():
 
 
 def main():
-    if sys.argv[1:2] == ['--print']:
-        compiled, _ = load(sys.argv[2] if len(sys.argv) > 2 else ETC / 'policy.toml')
+    args = sys.argv[1:]
+    if args[:1] == ['--print'] and len(args) <= 2:
+        source = args[1] if len(args) == 2 else ETC / 'policy.toml'
+        compiled, _ = load(sys.stdin.read() if source == '-' else Path(source).read_text())
         for agent, text in compiled.items():
             print(f'== {agent}\n{text}')
-    elif len(sys.argv) == 1 and os.geteuid() == 0:
+    elif not args and os.geteuid() == 0:
         apply()
+    elif (len(args) == 2 and args[0] == '--replace' and re.fullmatch('[0-9a-f]{64}', args[1])
+          and os.geteuid() == 0):
+        text = sys.stdin.read(1 << 20)
+        if sys.stdin.read(1):
+            raise PolicyError('the new policy is larger than 1 MiB')
+        apply((args[1], text))
     else:
         sys.exit(__doc__.split('\n\n')[1])
 

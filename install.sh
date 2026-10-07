@@ -9,6 +9,7 @@ set -eu
 cd "$(dirname "$0")"
 
 LIBEXEC=/usr/local/libexec
+CONSOLE=/usr/local/lib/harness-guard-console
 DESKTOP=/usr/lib/claude-desktop/claude-desktop
 CLI_ENTRY=/home/qiu/.local/bin/claude
 VERSIONS=/home/qiu/.local/share/claude/versions
@@ -57,6 +58,13 @@ install)
     install -m 755 bin/harness-guard bin/harness-guard-handoff "$LIBEXEC/"
     install -m 755 -D -t "$LIBEXEC/harness-guard-bin" bin/xdg-open bin/bwrap
     install -m 755 bin/harness-guard-apply /usr/local/sbin/harness-guard-apply
+    # The console runs unguarded, so it is installed root-owned and never run from here.
+    install -m 755 -D -t "$CONSOLE" console/harness-guard-console
+    install -m 644 console/main.qml "$CONSOLE/"
+    ln -sfn "$CONSOLE/harness-guard-console" /usr/local/bin/harness-guard-console
+    install -m 755 tools/check.sh "$LIBEXEC/harness-guard-check"
+    install -m 644 console/org.harness-guard.apply.policy /usr/share/polkit-1/actions/
+    install -m 644 -D -t /usr/local/share/applications console/harness-guard-console.desktop
     install -m 644 -D -t /etc/harness-guard/agents agents/*.toml
     install -m 644 etc/gitconfig /etc/harness-guard/gitconfig
     [ -e /etc/harness-guard/policy.toml ] || install -m 644 etc/policy.toml /etc/harness-guard/policy.toml
@@ -178,8 +186,11 @@ uninstall)
     rm -f /etc/apparmor.d/abstractions/harness-guard /etc/apparmor.d/abstractions/harness-guard-claude \
           /etc/apparmor.d/abstractions/harness-guard-antigravity /etc/apparmor.d/abstractions/harness-guard-electron \
           "$LIBEXEC/harness-guard" "$LIBEXEC/harness-guard-handoff" /usr/local/sbin/harness-guard-apply \
+          "$LIBEXEC/harness-guard-check" /usr/local/bin/harness-guard-console \
+          /usr/share/polkit-1/actions/org.harness-guard.apply.policy \
+          /usr/local/share/applications/harness-guard-console.desktop \
           /etc/modules-load.d/claude-cowork.conf /etc/udev/rules.d/70-claude-vhost-vsock.rules
-    rm -rf /etc/apparmor.d/harness-guard "$LIBEXEC/harness-guard-bin" /etc/harness-guard/agents \
+    rm -rf /etc/apparmor.d/harness-guard "$LIBEXEC/harness-guard-bin" "$CONSOLE" /etc/harness-guard/agents \
            /etc/harness-guard/gitconfig /etc/harness-guard/gtk-schemas
     setfacl -x u:1000 /dev/vhost-vsock 2>/dev/null || true
     echo "Removed. Your policy stays in /etc/harness-guard/policy.toml. Claude Code now points at $version; agy is back in ~/.local/bin."

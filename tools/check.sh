@@ -93,4 +93,13 @@ PY
     && grep -qx 'Exec=/usr/local/bin/antigravity %U' ~/.local/share/applications/antigravity.desktop \
     && echo "  ok    the antigravity command and menu entry go through the launcher" \
     || { echo "  FAIL  Antigravity starts without the launcher (rerun install.sh after reinstalling it)"; status=1; }
+echo "console:"
+owned=ok
+for file in /usr/local/lib/harness-guard-console/harness-guard-console /usr/local/lib/harness-guard-console/main.qml \
+            /usr/local/libexec/harness-guard-check /usr/share/polkit-1/actions/org.harness-guard.apply.policy; do
+    [ "$(stat -c %u "$file" 2>/dev/null)" = 0 ] && [ $(( 0$(stat -c %a "$file") & 022 )) = 0 ] || owned=
+done
+[ -n "$owned" ] && [ "$(readlink /usr/local/bin/harness-guard-console)" = /usr/local/lib/harness-guard-console/harness-guard-console ] \
+    && echo "  ok    the console and its pkexec action are installed root-owned" \
+    || { echo "  FAIL  console files missing or writable by others (rerun install.sh)"; status=1; }
 exit $status

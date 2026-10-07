@@ -1,9 +1,1 @@
 __pycache__/
-*.pyc
-/work/
-/backups/
-.env
-.env.*
-*.core
-*.crash
-gschemas.compiled

@@ -56,6 +56,9 @@ back to running unconfined.
 | `bin/harness-guard` | `/usr/local/libexec/harness-guard`: the launcher |
 | `bin/harness-guard-handoff`, `etc/systemd/harness-guard-handoff*` | `/usr/local/libexec/harness-guard-handoff`, started per request by the user socket unit in `/etc/systemd/user`: starts agy in its own guard for Claude |
 | `bin/harness-guard-apply` | `/usr/local/sbin/harness-guard-apply`: compiles the policy into `/etc/apparmor.d/harness-guard/` and reloads the profiles |
+| `console/harness-guard-console`, `console/main.qml` | `/usr/local/lib/harness-guard-console/`, started as `harness-guard-console` or "Harness Guard" in the menu: the console (below) |
+| `console/org.harness-guard.apply.policy` | `/usr/share/polkit-1/actions/`: lets the console run `harness-guard-apply` through `pkexec`, admin password every time |
+| `tools/check.sh` | also `/usr/local/libexec/harness-guard-check`, which the console runs |
 | `bin/xdg-open`, `bin/bwrap` | `/usr/local/libexec/harness-guard-bin/` (first in the guarded `PATH`) |
 | `etc/gitconfig` | `/etc/harness-guard/gitconfig` |
 | `etc/gtk.gschema.override` | compiled into `/etc/harness-guard/gtk-schemas/` |
@@ -143,7 +146,18 @@ write into `~/.local/state/{claude,agy}/guard-bin`, which the launcher shows as
 `~/.local/bin`.
 Desktop package updates go to the diverted `.real` file and need no action.
 
-**Choosing paths per agent:** edit the policy and apply it. Running agents get the new
+**Console:** `harness-guard-console` (PyQt6 + Kirigami) shows the agents (guarded,
+enforcing, running processes, version), the check as a live view (Integrity), this
+boot's AppArmor denials per agent (Activity), and edits the policy (Permissions).
+Applying shows the policy and compiled-rule diff first, then `pkexec` asks for your
+password and `harness-guard-apply --replace` installs exactly that text (keeping
+`policy.toml.bak`), refusing if `policy.toml` changed since the console read it. The
+console runs as you, unguarded, offers no D-Bus or socket API, and refuses to start
+unless it is the root-owned installed copy. Activity offers "Allow…" only as a draft
+entry for review, and never for `~/.*` paths, since an agent chooses what it gets
+denied. Activity needs your user to read the kernel journal (as `check.sh` does).
+
+**Choosing paths per agent:** use the console, or edit the policy and apply it. Running agents get the new
 rules within a second, without a restart:
 
 ```bash

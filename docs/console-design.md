@@ -147,4 +147,8 @@ The other agents in the table stay unguarded until later.
      `handoff_from`, takes the working directory as a descriptor the caller opened, and
      runs the normal launcher. This is the one socket an agent can drive; it can only
      start the listed agent in that agent's own guard.
-4. Console UI for the four agents.
+4. Console UI for the four agents (`console/`, PyQt6 + Kirigami 6, loaded from the
+   system QML modules only). Agents, Integrity and Activity are read-only; Permissions
+   edits a copy and applies it with `pkexec harness-guard-apply --replace SHA256`, the
+   reviewed text on stdin. The agent table's switch to guard a new agent, and a tree
+   view of paths, wait until more agents are in scope; paths are a flat list.

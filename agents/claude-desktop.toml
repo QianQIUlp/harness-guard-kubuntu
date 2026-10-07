@@ -1,4 +1,9 @@
 # How harness-guard runs Claude Desktop. Installed to /etc/harness-guard/agents/.
+name = "Claude Desktop"
+# The root-owned forwarder that runs the launcher; the console checks it.
+entry = "/usr/lib/claude-desktop/claude-desktop"
+# The console shows the first version number this prints (run as qiu).
+version = ["/usr/bin/dpkg-query", "-Wf", "${Version}", "claude-desktop"]
 profile = "claude-desktop-guard"
 exec = "/usr/lib/claude-desktop/claude-desktop.real"
 args = ["--ozone-platform=wayland", "--disable-dev-shm-usage", "--password-store=kwallet6"]

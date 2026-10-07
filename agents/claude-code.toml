@@ -1,5 +1,10 @@
 # How harness-guard runs Claude Code (native CLI). Installed to /etc/harness-guard/agents/.
 # Paths may start with ~/ for /home/qiu/.
+name = "Claude Code"
+# The root-owned forwarder that runs the launcher; the console checks it.
+entry = "~/.local/bin/claude"
+# The console shows the first version number this prints (run as qiu).
+version = ["/usr/bin/readlink", "~/.local/state/claude/guard-bin/claude"]
 profile = "claude-code-guard"
 exec = "~/.local/bin/claude"  # inside the private view below
 argv0 = "claude"

@@ -1,0 +1,460 @@
+#!/usr/bin/python3 -I
+"""Harness Guard console: see and change what each guarded coding agent may do.
+
+Installed root-owned in /usr/local/lib/harness-guard-console and started as
+harness-guard-console (as qiu, unguarded). It reads state, runs the installed check,
+follows the kernel journal for denials, and edits a copy of
+/etc/harness-guard/policy.toml, which `harness-guard-apply --replace` installs through
+pkexec (your password every time). It offers no D-Bus or socket API, and refuses to
+run from a copy that isn't root-owned (such as this repository).
+"""
+import difflib
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import tomllib
+from datetime import datetime
+from pathlib import Path
+
+for var in ('QML_IMPORT_PATH', 'QML2_IMPORT_PATH', 'QT_PLUGIN_PATH'):
+    os.environ.pop(var, None)  # only the system's Qt and Kirigami modules
+
+from PyQt6.QtCore import QObject, QProcess, QTimer, QUrl, pyqtProperty, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QGuiApplication, QIcon
+from PyQt6.QtQml import QQmlApplicationEngine
+
+HOME = '/home/qiu'
+ETC = Path('/etc/harness-guard')
+POLICY = ETC / 'policy.toml'
+COMPILED = Path('/etc/apparmor.d/harness-guard')
+APPLY = '/usr/local/sbin/harness-guard-apply'
+CHECK = '/usr/local/libexec/harness-guard-check'
+QML = Path(__file__).resolve().with_name('main.qml')
+ACCESS = ('none', 'r', 'rx', 'rw', 'rwx')
+HEADER = '# Your choices per agent; see harness-guard-apply. Written by harness-guard-console.\n'
+
+
+def expand(path):
+    return HOME + path[1:] if path.startswith('~/') else path
+
+
+def version_of(text):
+    match = re.search(r'\d+(\.\d+)+', text)
+    return match.group(0) if match else ''
+
+
+def forwarder_ok(agent, entry):
+    """The entry point is a root-owned file that runs the launcher for this agent."""
+    try:
+        st = os.lstat(entry)
+        text = Path(entry).read_text(errors='replace')
+    except OSError:
+        return False
+    return (stat.S_ISREG(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o022
+            and re.search(rf'^exec /usr/local/libexec/harness-guard {re.escape(agent)} "\$@"$',
+                          text, re.M) is not None)
+
+
+def enforcing(profile):
+    """Same probe as check.sh: a process switched into the profile reports (enforce)."""
+    try:
+        label = subprocess.run(['/usr/bin/setpriv', '--no-new-privs', '--', '/usr/bin/aa-exec',
+                                '-p', profile, '--', '/usr/bin/cat', '/proc/self/attr/current'],
+                               capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return label in (f'{profile} (enforce)', f'{profile}//&unconfined (enforce)')
+
+
+def running(profiles):
+    counts = dict.fromkeys(profiles, 0)
+    for attr in Path('/proc').glob('[0-9]*/attr/current'):
+        try:
+            name = attr.read_text().split(' (')[0].split('//')[0]
+        except OSError:
+            continue
+        if name in counts:
+            counts[name] += 1
+    return counts
+
+
+def policy_text(header, policy):
+    """TOML for the policy schema (agents.ID.github_token, agents.ID.paths)."""
+    out = [header.rstrip('\n')]
+    for agent, section in policy.items():
+        out += ['', f'[agents.{agent}]']
+        if 'github_token' in section:
+            out.append(f'github_token = {"true" if section["github_token"] else "false"}')
+        out.append('paths = [')
+        out += [f'  {{ path = {json.dumps(e["path"])}, access = {json.dumps(e["access"])} }},'
+                for e in section.get('paths', [])]
+        out.append(']')
+    return '\n'.join(out) + '\n'
+
+
+def split_compiled(text):
+    """'== agent' sections of harness-guard-apply --print."""
+    parts = re.split(r'^== (\S+)\n', text, flags=re.M)
+    return {parts[i]: parts[i + 1].rstrip('\n') + '\n' for i in range(1, len(parts) - 1, 2)}
+
+
+def audit_fields(message):
+    fields = {}
+    for key, quoted, bare in re.findall(r'(\w+)=(?:"([^"]*)"|(\S+))', message):
+        if bare and key in ('name', 'comm') and re.fullmatch(r'(?:[0-9A-F]{2})+', bare):
+            bare = bytes.fromhex(bare).decode(errors='replace')  # audit hex-encodes odd names
+        fields[key] = quoted or bare
+    return fields
+
+
+def suggestion(fields):
+    """Smallest policy entry that would allow a file denial, or ''. Agents choose what
+    they get denied, so nothing is offered for config and credentials (~/.*)."""
+    name, mask = fields.get('name', ''), fields.get('requested_mask', '')
+    if (fields.get('class', 'file') != 'file' or not name.startswith('/') or not mask
+            or name.startswith(f'{HOME}/.')):
+        return ''
+    access = 'r' + ('w' if set(mask) & set('wacd') else '') + ('x' if set(mask) & set('xm') else '')
+    return access if access in ACCESS else ''
+
+
+class Guard(QObject):
+    agentsChanged = pyqtSignal()
+    runningChanged = pyqtSignal()
+    checkChanged = pyqtSignal()
+    denialsChanged = pyqtSignal()
+    draftChanged = pyqtSignal()
+    reviewChanged = pyqtSignal()
+    applyChanged = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self._agents, self._running, self._versions = [], {}, {}
+        self._check, self._check_exit, self._check_buffer = [], -1, ''
+        self._denials, self._journal_error, self._journal_buffer = {}, '', ''
+        self._review, self._review_ok, self._apply_output, self._apply_exit = [], False, '', -1
+        self._processes = []
+        self.reload_policy()
+        self.refresh()
+        self._timer = QTimer(self, interval=2000, timeout=self.update_running)
+        self._timer.start()
+        self.follow_journal()
+
+    # Agents
+
+    @pyqtProperty('QVariantList', notify=agentsChanged)
+    def agents(self):
+        return [{**a, 'version': self._versions.get(a['id'], '')} for a in self._agents]
+
+    @pyqtProperty('QVariantMap', notify=runningChanged)
+    def running(self):
+        return self._running
+
+    @pyqtSlot()
+    def refresh(self):
+        specs = {p.stem: tomllib.loads(p.read_text()) for p in sorted((ETC / 'agents').glob('*.toml'))}
+        self._agents = [{
+            'id': agent, 'name': spec.get('name', agent), 'profile': spec['profile'],
+            'entry': spec.get('entry', ''),
+            'guarded': forwarder_ok(agent, expand(spec.get('entry', ''))),
+            'enforcing': enforcing(spec['profile']),
+        } for agent, spec in specs.items()]
+        self.agentsChanged.emit()
+        self.update_running()
+        for agent, spec in specs.items():
+            if command := [expand(arg) for arg in spec.get('version', ())]:
+                self.run(command, lambda out, code, agent=agent: self.set_version(agent, out))
+
+    def set_version(self, agent, output):
+        self._versions[agent] = version_of(output) or '?'
+        self.agentsChanged.emit()
+
+    def update_running(self):
+        counts = running([a['profile'] for a in self._agents])
+        result = {a['id']: counts[a['profile']] for a in self._agents}
+        if result != self._running:
+            self._running = result
+            self.runningChanged.emit()
+
+    def run(self, command, done, stdin=None, on_output=None):
+        """Start a program without a shell; done(output, exit code) when it ends."""
+        process = QProcess(self)
+        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        output = []
+
+        def read():
+            chunk = bytes(process.readAllStandardOutput()).decode(errors='replace')
+            output.append(chunk)
+            if on_output:
+                on_output(chunk)
+
+        def finished(code, status):
+            read()
+            self._processes.remove(process)
+            process.deleteLater()
+            done(''.join(output), code if status == QProcess.ExitStatus.NormalExit else -1)
+
+        process.readyReadStandardOutput.connect(read)
+        process.finished.connect(finished)
+        process.errorOccurred.connect(lambda error: error == QProcess.ProcessError.FailedToStart
+                                      and finished(127, QProcess.ExitStatus.NormalExit))
+        self._processes.append(process)
+        process.start(command[0], command[1:])
+        if stdin is not None:
+            process.write(stdin.encode())
+            process.closeWriteChannel()
+        return process
+
+    # Integrity
+
+    @pyqtProperty('QVariantList', notify=checkChanged)
+    def checkLines(self):
+        return self._check
+
+    @pyqtProperty(int, notify=checkChanged)
+    def checkExit(self):
+        return self._check_exit  # -2 running, -1 never run
+
+    @pyqtSlot()
+    def runCheck(self):
+        if self._check_exit == -2:
+            return
+        self._check, self._check_exit, self._check_buffer = [], -2, ''
+        self.checkChanged.emit()
+        self.run([CHECK], self.check_done, on_output=self.check_output)
+
+    def check_output(self, chunk):
+        *lines, self._check_buffer = (self._check_buffer + chunk).split('\n')
+        for line in lines:
+            kind = ('ok' if line.startswith('  ok ') else 'fail' if line.startswith('  FAIL ')
+                    else 'head' if line and not line.startswith(' ') else 'info')
+            self._check.append({'kind': kind, 'text': line.strip()})
+        if lines:
+            self.checkChanged.emit()
+
+    def check_done(self, output, code):
+        if self._check_buffer:
+            self.check_output('\n')
+        if not self._check:
+            self._check = [{'kind': 'fail', 'text': f'FAIL  {CHECK} did not run ({code})'}]
+        self._check_exit = code
+        self.checkChanged.emit()
+
+    # Activity
+
+    @pyqtProperty('QVariantList', notify=denialsChanged)
+    def denials(self):
+        return sorted(self._denials.values(), key=lambda d: d['last'], reverse=True)
+
+    @pyqtProperty(str, notify=denialsChanged)
+    def journalError(self):
+        return self._journal_error
+
+    def follow_journal(self):
+        self.run(['/usr/bin/journalctl', '-k', '-b', '-f', '-n', '2000', '-o', 'json',
+                  '--no-pager', '-g', 'apparmor="DENIED"'],
+                 self.journal_ended, on_output=self.journal_output)
+
+    def journal_output(self, chunk):
+        *lines, self._journal_buffer = (self._journal_buffer + chunk).split('\n')
+        profiles = {a['profile']: a['id'] for a in self._agents}
+        changed = False
+        for line in lines:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                if line.strip():
+                    self._journal_error = line.strip()
+                    changed = True
+                continue
+            message = entry.get('MESSAGE')
+            if isinstance(message, list):  # journald sends non-UTF-8 text as bytes
+                message = bytes(message).decode(errors='replace')
+            fields = audit_fields(message or '')
+            agent = profiles.get(fields.get('profile', '').split('//')[0])
+            if not agent:
+                continue
+            key = (agent, fields.get('operation', ''), fields.get('name', ''),
+                   fields.get('requested_mask', ''), fields.get('peer', ''))
+            when = int(entry.get('__REALTIME_TIMESTAMP', 0)) // 1_000_000
+            denial = self._denials.setdefault(key, {
+                'agent': agent, 'operation': key[1], 'name': key[2] or fields.get('peer', '')
+                or fields.get('path', '') or fields.get('member', ''),
+                'mask': key[3] or fields.get('denied', ''), 'comm': fields.get('comm', ''),
+                'profile': fields.get('profile', ''), 'access': suggestion(fields),
+                'count': 0, 'last': 0, 'time': ''})
+            denial['count'] += 1
+            if when >= denial['last']:
+                denial.update(last=when, comm=fields.get('comm', ''),
+                              time=datetime.fromtimestamp(when).strftime('%H:%M:%S'))
+            changed = True
+        if changed:
+            self.denialsChanged.emit()
+
+    def journal_ended(self, output, code):
+        self._journal_error = f'journalctl stopped ({code}). {self._journal_error}'.strip()
+        self.denialsChanged.emit()
+
+    @pyqtSlot()
+    def clearDenials(self):
+        self._denials = {}
+        self.denialsChanged.emit()
+
+    # Permissions
+
+    def reload_policy(self):
+        raw = POLICY.read_bytes()
+        self._policy_hash = hashlib.sha256(raw).hexdigest()
+        text = raw.decode()
+        self._header = re.match(r'(?:#[^\n]*\n|\n)*', text).group(0) or HEADER  # keep its comments
+        self._policy = tomllib.loads(text).get('agents', {})
+        self._draft = json.loads(json.dumps(self._policy))
+        self.draftChanged.emit()
+
+    @pyqtProperty('QVariantMap', notify=draftChanged)
+    def draft(self):
+        return self._draft
+
+    @pyqtProperty(bool, notify=draftChanged)
+    def dirty(self):
+        return policy_text('', self._draft) != policy_text('', self._policy)
+
+    def section(self, agent):
+        return self._draft.setdefault(agent, {'paths': []}).setdefault('paths', [])
+
+    def changed(self):
+        self._draft = dict(self._draft)
+        self.draftChanged.emit()
+
+    @pyqtSlot(str, bool)
+    def setGithubToken(self, agent, on):
+        self.section(agent)
+        self._draft[agent]['github_token'] = on
+        self.changed()
+
+    @pyqtSlot(str, int, str)
+    def setAccess(self, agent, index, access):
+        self.section(agent)[index]['access'] = access
+        self.changed()
+
+    @pyqtSlot(str, int)
+    def removePath(self, agent, index):
+        del self.section(agent)[index]
+        self.changed()
+
+    @pyqtSlot(str, str, str)
+    def addPath(self, agent, path, access):
+        path = path.strip()
+        if path.startswith(HOME + '/'):
+            path = '~' + path[len(HOME):]
+        if not path or access not in ACCESS:
+            return
+        paths = self.section(agent)
+        for entry in paths:
+            if entry['path'].rstrip('/') == path.rstrip('/'):
+                entry['access'] = access
+                break
+        else:
+            paths.append({'path': path, 'access': access})
+        self.changed()
+
+    @pyqtSlot(QUrl, result=str)
+    def folderPath(self, url):
+        path = url.toLocalFile().rstrip('/') + '/'
+        return '~' + path[len(HOME):] if path.startswith(HOME + '/') else path
+
+    @pyqtSlot()
+    def discard(self):
+        self.reload_policy()
+
+    @pyqtProperty('QVariantList', notify=reviewChanged)
+    def review(self):
+        return self._review
+
+    @pyqtProperty(bool, notify=reviewChanged)
+    def reviewOk(self):
+        return self._review_ok
+
+    @pyqtSlot()
+    def makeReview(self):
+        """Policy and compiled-rule diff of the draft, checked by the installed compiler."""
+        self._pending = policy_text(self._header, self._draft)
+        old_policy = policy_text('', self._policy).splitlines(True)
+        lines = list(difflib.unified_diff(old_policy, policy_text('', self._draft).splitlines(True),
+                                          'policy.toml', 'policy.toml (new)'))
+        result = subprocess.run([APPLY, '--print', '-'], input=self._pending,
+                                capture_output=True, text=True)
+        self._review_ok = result.returncode == 0
+        if self._review_ok:
+            for agent, text in split_compiled(result.stdout).items():
+                try:
+                    old = (COMPILED / agent).read_text()
+                except OSError:
+                    old = ''
+                lines += difflib.unified_diff(old.splitlines(True), text.splitlines(True),
+                                              f'rules/{agent}', f'rules/{agent} (new)')
+            if not any(line.startswith('--- rules/') for line in lines):
+                lines.append('(no rule changes; launcher settings apply on the next start)\n')
+        else:
+            lines = ['The policy compiler refused this draft:\n',
+                     *result.stderr.splitlines(True)]
+        self._review = [{'kind': line[:1] if line[:3] not in ('---', '+++') else 'h',
+                         'text': line.rstrip('\n')} for line in lines]
+        self._apply_output, self._apply_exit = '', -1
+        self.reviewChanged.emit()
+        self.applyChanged.emit()
+
+    @pyqtProperty(str, notify=applyChanged)
+    def applyOutput(self):
+        return self._apply_output
+
+    @pyqtProperty(int, notify=applyChanged)
+    def applyExit(self):
+        return self._apply_exit  # -2 running, -1 not run
+
+    @pyqtSlot()
+    def applyReview(self):
+        """Install exactly the reviewed text; pkexec asks for the admin password."""
+        if not self._review_ok or self._apply_exit == -2:
+            return
+        self._apply_exit, self._apply_output = -2, ''
+        self.applyChanged.emit()
+        self.run(['/usr/bin/pkexec', APPLY, '--replace', self._policy_hash],
+                 self.apply_done, stdin=self._pending)
+
+    def apply_done(self, output, code):
+        messages = {126: 'Cancelled: no password was given.', 127: 'Not authorized.'}
+        self._apply_output = messages.get(code, output.strip())
+        self._apply_exit = code
+        if code == 0:
+            self.reload_policy()
+            self._review, self._review_ok = [], False
+            self.reviewChanged.emit()
+        self.applyChanged.emit()
+
+
+def main():
+    files = (Path(__file__).resolve(), QML)
+    if any(p.stat().st_uid != 0 or p.stat().st_mode & 0o022 for p in files):
+        sys.exit('harness-guard-console: run the installed console (sudo ./install.sh), '
+                 'not a copy agents can write')
+    app = QGuiApplication(sys.argv)
+    app.setApplicationName('harness-guard-console')
+    app.setApplicationDisplayName('Harness Guard')
+    app.setDesktopFileName('harness-guard-console')
+    app.setWindowIcon(QIcon.fromTheme('security-high'))
+    engine = QQmlApplicationEngine()
+    guard = Guard()
+    engine.rootContext().setContextProperty('guard', guard)
+    engine.load(QUrl.fromLocalFile(str(QML)))
+    if not engine.rootObjects():
+        sys.exit('harness-guard-console: the interface failed to load')
+    sys.exit(app.exec())
+
+
+if __name__ == '__main__':
+    main()

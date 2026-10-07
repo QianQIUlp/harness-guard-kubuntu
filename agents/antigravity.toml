@@ -1,5 +1,10 @@
 # How harness-guard runs the Antigravity app. Installed to /etc/harness-guard/agents/.
 # Paths may start with ~/ for /home/qiu/.
+name = "Antigravity"
+# The root-owned forwarder that runs the launcher; the console checks it.
+entry = "/usr/local/bin/antigravity"
+# The console shows the first version number this prints (run as qiu).
+version = ["/usr/bin/grep", "-m1", "\"version\"", "/opt/antigravity/resources/app/package.json"]
 profile = "antigravity-guard"
 exec = "/opt/antigravity/antigravity"
 # The app's cookies use a built-in key instead of KWallet, which the guard denies.
