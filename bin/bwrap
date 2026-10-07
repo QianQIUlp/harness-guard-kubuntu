@@ -1,0 +1,6 @@
+#!/bin/sh
+# Nested bubblewrap sandboxes are not supported inside the guard. Glycin (GTK image
+# decoding) falls back to unsandboxed loaders, which stay confined by the guard,
+# only when bwrap reports this exact namespace error.
+echo 'bwrap: No permissions to create a new namespace (inside the Claude AppArmor guard)' >&2
+exit 1

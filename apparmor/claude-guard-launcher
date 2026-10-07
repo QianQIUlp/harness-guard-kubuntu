@@ -1,0 +1,18 @@
+# Entry profile for the launcher when it starts from an unconfined shell.
+#
+# On this Ubuntu kernel, changing profile straight from "unconfined" gives a stacked
+# label (claude-code-guard//&unconfined) that keeps Ubuntu's user-namespace restriction,
+# so the launcher's private namespace fails. Changing from a named profile gives a clean
+# label, as it does for launches from plasmashell. Only the root-owned launcher runs
+# here, and only until it switches to a guard.
+abi <abi/5.0>,
+include <tunables/global>
+
+profile claude-guard-launcher /usr/local/libexec/claude-guard {
+  include <abstractions/base>
+  /** rwlkm,
+  /usr/** rix,
+  /usr/bin/gh Ux,  # GitHub token from the keyring, before confinement
+  change_profile -> claude-code-guard,
+  change_profile -> claude-desktop-guard,
+}

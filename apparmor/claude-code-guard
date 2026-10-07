@@ -1,0 +1,7 @@
+# AppArmor guard for Claude Code (native CLI). Installed as /etc/apparmor.d/claude-code-guard.
+abi <abi/5.0>,
+include <tunables/global>
+
+profile claude-code-guard /home/qiu/.local/share/claude/versions/* flags=(attach_disconnected) {
+  include <abstractions/claude-guard>
+}

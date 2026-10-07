@@ -1,0 +1,113 @@
+# Rules shared by claude-code-guard and claude-desktop-guard.
+# AppArmor denies everything not granted here or in the including profile.
+
+  include <abstractions/base>
+  include <abstractions/nameservice-strict>
+  include <abstractions/ssl_certs>
+
+  network inet stream,
+  network inet6 stream,
+  network inet dgram,
+  network inet6 dgram,
+
+  # System programs (shells, git, compilers, the launcher in /usr/local) run under the same guard.
+  /usr/** rmix,
+  /etc/{bash.bashrc,profile,manpath.config,machine-id} r,
+  /etc/profile.d/{,**} r,
+  /etc/default/im-config r,
+  /etc/java-*/{,**} r,
+  /etc/claude-guard/{,**} r,
+  /proc/version r,
+  /proc/sys/vm/mmap_min_addr r,
+  /proc/sys/kernel/random/uuid r,
+  /proc/sys/kernel/overflow{u,g}id r,
+  /sys/fs/cgroup/{,**} r,
+  /proc/sys/user/max_user_namespaces r,
+  owner /proc/@{pid}/{cgroup,stat,statm,status,comm,cmdline,mountinfo,fd/,attr/current} r,
+
+  # Terminals.
+  /dev/tty rw,
+  /dev/pts/ r,
+  /dev/{ptmx,pts/ptmx} rw,
+  owner /dev/pts/[0-9]* rw,
+
+  # Read-only shell setup and toolchains.
+  owner /home/qiu/.{bashrc,bash_profile,bash_login,profile,bash_aliases,npmrc} r,
+  owner /home/qiu/.grok/completions/bash/grok.bash r,
+  owner /home/qiu/.config/pnpm/{,auth.ini} r,
+  owner /home/qiu/.nvm/ r,
+  owner /home/qiu/.nvm/{nvm.sh,bash_completion} r,
+  owner /home/qiu/.nvm/nvm-exec rix,
+  owner /home/qiu/.nvm/alias/{,**} r,
+  owner /home/qiu/.nvm/versions/{,node/} r,
+  owner /home/qiu/.nvm/versions/node/v22.23.2/{,**} rmix,
+  owner /home/qiu/.cargo/ r,
+  owner /home/qiu/.cargo/{env,config,config.toml} r,
+  owner /home/qiu/.cargo/bin/{,**} rmix,
+  owner /home/qiu/.rustup/{,**} rmix,
+  owner /home/qiu/.rustup/settings.toml k,
+
+  # Work areas. Everything executed from here stays confined (ix).
+  owner /home/qiu/src/ r,
+  owner /home/qiu/src/** rwkmix,
+  owner /home/qiu/.agents/skills/ r,
+  owner /home/qiu/.agents/skills/** rmix,
+  owner /home/qiu/.claude/ rw,
+  owner /home/qiu/.claude/** rwkmix,
+  owner /home/qiu/.claude.json{,.*} rwk,
+  owner /home/qiu/.claude.json.lock/{,**} rwk,
+  owner /home/qiu/.cache/claude-guard/{,**} rwkmix,
+  owner /tmp/claude-1000/{,**} rwkmix,
+
+  # Claude Code native installs and updates. Binaries in versions/ are attached to
+  # claude-code-guard, so writing them cannot create an unconfined program.
+  owner /home/qiu/.local/share/claude/versions/ rw,
+  owner /home/qiu/.local/share/claude/versions/** rwkmix,
+  owner /home/qiu/.local/state/claude/{,**} rwk,
+  owner /home/qiu/.local/bin/ r,
+  # Inside the launcher's private view this is ~/.local/state/claude/guard-bin; the
+  # host file is a root-owned, immutable forwarder.
+  owner /home/qiu/.local/bin/claude{,.tmp.*} rw,
+  /home/qiu/.local/bin/claude rix,
+
+  # The launcher's private namespace: a fresh /dev/pts (other terminals invisible)
+  # and the CLI updater's view of ~/.local/bin.
+  userns,
+  capability sys_admin,
+  owner /proc/@{pid}/{setgroups,uid_map,gid_map} rw,
+  mount fstype=devpts options in (rw,nosuid,noexec,silent) devpts -> /dev/pts/,
+  mount options in (rw,bind,silent) /home/qiu/.local/state/claude/guard-bin/ -> /home/qiu/.local/bin/,
+
+  # Session bus: handshake plus opening URLs/files through the portal (bin/xdg-open).
+  owner /run/user/1000/bus rw,
+  dbus send bus=session path=/org/freedesktop/DBus
+       interface=org.freedesktop.DBus
+       member={Hello,AddMatch,RemoveMatch,GetNameOwner,NameHasOwner,ListNames,StartServiceByName}
+       peer=(name=org.freedesktop.DBus),
+  dbus receive bus=session peer=(name=org.freedesktop.DBus),
+  dbus send bus=session path=/org/freedesktop/portal/desktop
+       interface=org.freedesktop.portal.OpenURI member={OpenURI,OpenFile,OpenDirectory}
+       peer=(label=unconfined),
+  dbus send bus=session path=/org/freedesktop/portal/desktop
+       interface=org.freedesktop.DBus.Properties member={Get,GetAll}
+       peer=(label=unconfined),
+  dbus receive bus=session path=/org/freedesktop/portal/desktop/request/**
+       interface=org.freedesktop.portal.Request member=Response
+       peer=(label=unconfined),
+  dbus send bus=session path=/org/freedesktop/portal/desktop/request/**
+       interface=org.freedesktop.portal.Request member=Close
+       peer=(label=unconfined),
+
+  # Explicit denials override every allow rule above and are logged.
+  # (base grants legacy encrypted-home paths; the rest are already denied by default.)
+  audit deny /home/qiu/.Private{,/**} rwklmx,
+  audit deny /home/.ecryptfs/** rwklmx,
+  audit deny /home/qiu/.{ssh,gnupg,aws,azure,kube,docker,mozilla,password-store}/** rwklmx,
+  audit deny /home/qiu/.config/{git,gh,gcloud,kwalletd,windows-migration,google-chrome,chromium,BraveSoftware,clash*,Clash*,mihomo*,Mihomo*,clash-verge*}/** rwklmx,
+  audit deny /home/qiu/.{gitconfig,git-credentials,bash_history} rwklmx,
+  # No login autostart: these would run outside the guard.
+  audit deny /home/qiu/.config/{autostart,systemd/user}/** wl,
+  audit deny /run/{docker,containerd}.sock rw,
+  audit deny /usr/bin/{sudo,su,pkexec,newgrp,sg} x,
+  audit deny capability mac_admin,
+  audit deny capability mac_override,

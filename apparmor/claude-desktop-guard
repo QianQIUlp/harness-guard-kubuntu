@@ -1,0 +1,175 @@
+# AppArmor guard for Claude Desktop. Installed as /etc/apparmor.d/claude-desktop-guard.
+# The packaged ELF is dpkg-diverted to claude-desktop.real; its original path is a
+# root-owned forwarder to /usr/local/libexec/claude-guard.
+# Portions adapted from roddhjav/apparmor.d f9ee26eb2d44db2a0ae0fd546cdd845f1bb86c2a
+# Copyright (C) 2024-2026 Alexandre Pujol <alexandre@pujol.io>
+# SPDX-License-Identifier: GPL-2.0-only
+abi <abi/5.0>,
+include <tunables/global>
+
+profile claude-desktop-guard /usr/lib/claude-desktop/claude-desktop.real flags=(attach_disconnected) {
+  include <abstractions/claude-guard>
+  include <abstractions/fonts>
+  include <abstractions/dri-common>
+  include <abstractions/dri-enumerate>
+
+  owner /home/qiu/.config/Claude/ rw,
+  owner /home/qiu/.config/Claude/** rwkmix,
+  owner /home/qiu/.cache/claude-guard/** l,
+  /usr/lib/claude-desktop/resources/smol-bin.*.img rk,
+
+  # Chromium's own namespace sandbox and crash reporter.
+  capability setuid,
+  capability setgid,
+  capability sys_chroot,
+  capability sys_ptrace,
+  ptrace (read, trace) peer=claude-desktop-guard,
+  / r,
+  /proc/ r,
+  /proc/@{pid}/stat r,
+  /proc/{uptime,version_signature} r,
+  /proc/sys/fs/inotify/max_user_watches r,
+  /proc/sys/kernel/yama/ptrace_scope r,
+  /proc/sys/dev/i915/perf_stream_paranoid r,
+  owner /proc/@{pid}/task/ r,
+  owner /proc/@{pid}/task/@{tid}/{stat,status,comm} rw,
+  owner /proc/@{pid}/{fd/,mountinfo,smaps_rollup,oom_adj,oom_score_adj} r,
+  /sys/devices/system/cpu/{present,kernel_max} r,
+  /sys/devices/system/cpu/cpu[0-9]*/cpu_capacity r,
+  /sys/devices/system/cpu/cpufreq/policy[0-9]*/cpuinfo_max_freq r,
+  /sys/devices/@{pci_bus}/**/{revision,config,class} r,
+  /sys/bus/pci/devices/ r,
+  /sys/fs/cgroup/user.slice/{cpu.max,user-1000.slice/{cpu.max,user@1000.service/cpu.max}} r,
+  owner /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/{,*/}cpu.max r,
+  owner /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/**/memory.* r,
+  network netlink raw,  # device notifications
+
+  # Wayland, GPU, GTK.
+  owner /run/user/1000/wayland-[0-9]* rw,
+  owner /run/user/1000/{mesa,wayland-cursor}-shared-* rw,
+  audit deny /dev/dri/card* rw,
+  /etc/glvnd/egl_vendor.d/{,*.json} r,
+  /etc/gtk-3.0/settings.ini r,
+  owner /home/qiu/.config/gtk-3.0/{settings.ini,*.css} r,
+  owner /home/qiu/.config/mimeapps.list r,
+  owner /home/qiu/.local/share/applications/ r,
+  owner /home/qiu/.local/share/applications/{mimeapps.list,mimeinfo.cache,*.desktop} r,
+  audit deny /home/qiu/.{,cache/}fontconfig/{,**} wkl,
+
+  # Audio through the sound server; no direct device access.
+  /etc/pulse/client.conf r,
+  /etc/pulse/client.conf.d/{,*.conf} r,
+  /dev/shm/ r,
+  owner /dev/shm/pulse-shm-* rwk,
+  owner /run/user/1000/pulse/{,native} rw,
+  owner /run/user/1000/pipewire-0 rw,
+
+  # Cowork VM.
+  /dev/{kvm,vhost-vsock} rw,
+  owner /run/user/1000/claude-cowork-vm.sock rw,
+  owner /run/user/1000/cowork-vm-*/{,**} rwk,
+  /sys/module/{kvm_*,vhost}/parameters/* r,
+  /sys/devices/system/node/{,node[0-9]*/meminfo} r,
+  /proc/sys/vm/max_map_count r,
+  network vsock stream,
+
+  # System bus: handshake only.
+  /run/dbus/system_bus_socket rw,
+  dbus send bus=system path=/org/freedesktop/DBus
+       interface=org.freedesktop.DBus
+       member={Hello,AddMatch,RemoveMatch,GetNameOwner,NameHasOwner,StartServiceByName}
+       peer=(name=org.freedesktop.DBus),
+  dbus receive bus=system peer=(name=org.freedesktop.DBus),
+
+  # Notifications.
+  dbus send bus=session path=/org/freedesktop/Notifications
+       interface=org.freedesktop.Notifications
+       member={Notify,CloseNotification,GetCapabilities,GetServerInformation}
+       peer=(name=org.freedesktop.Notifications),
+  dbus receive bus=session peer=(name=org.freedesktop.Notifications),
+  dbus receive bus=session path=/org/freedesktop/Notifications
+       interface=org.freedesktop.Notifications
+       member={ActivationToken,ActionInvoked,NotificationClosed}
+       peer=(label="{unconfined,plasmashell}"),
+
+  # Tray icon and menu (KDE StatusNotifierItem + dbusmenu).
+  dbus bind bus=session name=org.{freedesktop,kde}.StatusNotifierItem-*,
+  dbus send bus=session path=/org/freedesktop/DBus
+       interface=org.freedesktop.DBus member={RequestName,ReleaseName}
+       peer=(name=org.freedesktop.DBus),
+  dbus send bus=session path=/StatusNotifierWatcher
+       interface=org.freedesktop.DBus.Properties member={Get,GetAll}
+       peer=(name=org.kde.StatusNotifierWatcher),
+  dbus send bus=session path=/StatusNotifierWatcher
+       interface=org.kde.StatusNotifierWatcher member=RegisterStatusNotifierItem
+       peer=(name=org.kde.StatusNotifierWatcher),
+  dbus receive bus=session path=/StatusNotifierWatcher
+       interface=org.kde.StatusNotifierWatcher
+       member={StatusNotifierHostRegistered,StatusNotifierHostUnregistered}
+       peer=(label="{unconfined,plasmashell}"),
+  dbus receive bus=session path={/StatusNotifierItem,/org/chromium/DbusMenu}
+       interface=org.freedesktop.DBus.Properties member={Get,GetAll}
+       peer=(label="{unconfined,plasmashell}"),
+  dbus receive bus=session path={/StatusNotifierItem,/org/chromium/DbusMenu}
+       interface=org.freedesktop.DBus.Introspectable member=Introspect
+       peer=(label="{unconfined,plasmashell}"),
+  dbus receive bus=session path=/StatusNotifierItem
+       interface=org.{freedesktop,kde}.StatusNotifierItem
+       member={Activate,SecondaryActivate,ContextMenu,Scroll,ProvideXdgActivationToken}
+       peer=(label="{unconfined,plasmashell}"),
+  dbus receive bus=session path=/org/chromium/DbusMenu interface=com.canonical.dbusmenu
+       member={GetLayout,GetGroupProperties,GetProperty,AboutToShow,AboutToShowGroup,Event,EventGroup}
+       peer=(label="{unconfined,plasmashell}"),
+  dbus send bus=session path=/StatusNotifierItem
+       interface=org.{freedesktop,kde}.StatusNotifierItem
+       member={NewTitle,NewIcon,NewAttentionIcon,NewOverlayIcon,NewToolTip,NewStatus}
+       peer=(label="{unconfined,plasmashell}"),
+  dbus send bus=session path=/org/chromium/DbusMenu interface=com.canonical.dbusmenu
+       member={LayoutUpdated,ItemsPropertiesUpdated} peer=(label="{unconfined,plasmashell}"),
+
+  # Portals: settings, file chooser, global shortcuts.
+  dbus send bus=session path=/org/freedesktop/portal/desktop
+       interface=org.freedesktop.portal.Settings member={Read,ReadOne,ReadAll}
+       peer=(label=unconfined),
+  dbus receive bus=session path=/org/freedesktop/portal/desktop
+       interface=org.freedesktop.portal.Settings member=SettingChanged
+       peer=(label=unconfined),
+  dbus send bus=session path=/org/freedesktop/portal/desktop
+       interface=org.freedesktop.portal.FileChooser member={OpenFile,SaveFile,SaveFiles}
+       peer=(label=unconfined),
+  dbus send bus=session path=/org/freedesktop/portal/desktop
+       interface=org.freedesktop.portal.GlobalShortcuts member={CreateSession,BindShortcuts,ListShortcuts}
+       peer=(label=unconfined),
+  dbus receive bus=session path=/org/freedesktop/portal/desktop
+       interface=org.freedesktop.portal.GlobalShortcuts member={Activated,Deactivated,ShortcutsChanged}
+       peer=(label=unconfined),
+  dbus send bus=session path=/org/freedesktop/portal/desktop
+       interface=org.freedesktop.host.portal.Registry member=Register
+       peer=(label=unconfined),
+  dbus send bus=session path=/org/freedesktop/portal/desktop/session/**
+       interface=org.freedesktop.portal.Session member=Close
+       peer=(label=unconfined),
+  dbus receive bus=session path=/org/freedesktop/portal/desktop/session/**
+       interface=org.freedesktop.portal.Session member=Closed
+       peer=(label=unconfined),
+
+  # busctl (Desktop's KWallet check) binds an abstract client address before connecting.
+  unix (bind) type=stream addr="@*/bus/busctl/*",
+
+  # KWallet: unlock and read passwords only (accepted: readPassword cannot be limited
+  # to Claude's own entries). Writes and other read methods stay denied.
+  dbus send bus=session path=/modules/kwalletd6
+       interface=org.kde.KWallet
+       member={isEnabled,wallets,localWallet,networkWallet,open,openAsync,isOpen,hasFolder,hasEntry,entryType,readPassword}
+       peer=(name=org.kde.kwalletd6),
+  dbus receive bus=session peer=(name=org.kde.kwalletd6),
+  dbus receive bus=session path=/modules/kwalletd6
+       interface=org.kde.KWallet member={walletAsyncOpened,walletOpened}
+       peer=(label=unconfined),
+  audit deny dbus send bus=session path=/modules/kwalletd6
+       interface=org.kde.KWallet
+       member={readEntry,readEntryList,readMap,readMapList,readPasswordList,writeEntry,writeMap,writePassword,removeEntry,removeFolder,renameEntry,changePassword,closeAllWallets}
+       peer=(name=org.kde.kwalletd6),
+  audit deny dbus send bus=session peer=(name=org.freedesktop.secrets),
+  audit deny dbus send bus=session peer=(name=org.freedesktop.systemd1),
+}

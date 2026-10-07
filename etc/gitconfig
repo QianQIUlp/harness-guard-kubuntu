@@ -1,0 +1,11 @@
+# Global git config inside the guard (~/.gitconfig is not readable there).
+[credential "https://github.com"]
+	helper =
+	helper = !/usr/bin/gh auth git-credential
+[credential "https://gist.github.com"]
+	helper =
+	helper = !/usr/bin/gh auth git-credential
+[core]
+	# The defaults under ~/.config/git are not readable inside the guard.
+	excludesFile = /dev/null
+	attributesFile = /dev/null

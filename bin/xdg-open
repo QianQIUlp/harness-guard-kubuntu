@@ -1,0 +1,4 @@
+#!/bin/sh
+# Open URLs and files through the desktop portal, so the browser or viewer
+# starts outside the guard instead of inheriting it.
+GIO_USE_PORTALS=1 exec /usr/bin/gio open "$@"
