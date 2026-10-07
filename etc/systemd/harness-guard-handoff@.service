@@ -3,7 +3,7 @@ Description=Hand-off between harness guards (one request)
 CollectMode=inactive-or-failed
 
 [Service]
-ExecStart=/usr/local/libexec/harness-guard-handoff
+ExecStart=/usr/libexec/harness-guard/handoff
 StandardInput=socket
 StandardOutput=journal
 StandardError=journal

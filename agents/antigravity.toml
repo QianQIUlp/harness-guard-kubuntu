@@ -1,5 +1,5 @@
-# How harness-guard runs the Antigravity app. Installed to /etc/harness-guard/agents/.
-# Paths may start with ~/ for /home/qiu/.
+# How harness-guard runs the Antigravity app. Installed to /etc/harness-guard/agents/ by the package.
+# Paths may start with ~/ for the owner's home (/etc/harness-guard/owner.toml).
 name = "Antigravity"
 # The root-owned forwarder that runs the launcher; the console checks it.
 entry = "/usr/local/bin/antigravity"

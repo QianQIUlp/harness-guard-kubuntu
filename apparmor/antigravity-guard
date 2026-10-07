@@ -1,5 +1,5 @@
 # Guard for the Antigravity app. /usr/local/bin/antigravity and the desktop entry go
-# through harness-guard (see agents/antigravity.toml); the profile also attaches to the
+# through the launcher (harness-guard-setup guard antigravity) (see agents/antigravity.toml); the profile also attaches to the
 # app binary, so running it directly is still confined. /opt/antigravity belongs to qiu
 # but stays read-only here: the app's updater is inactive for this install, and new
 # versions are installed outside the guard.

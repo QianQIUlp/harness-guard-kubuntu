@@ -1,5 +1,5 @@
 # Your choices per agent. Installed once to /etc/harness-guard/policy.toml (root-owned);
-# install.sh never overwrites it, only appends the section of a newly added agent.
+# the package never overwrites it, only appends the section of a newly added agent.
 # After editing, apply it live (no agent restart):
 #   sudo -e /etc/harness-guard/policy.toml && sudo harness-guard-apply
 #

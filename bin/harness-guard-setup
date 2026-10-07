@@ -1,0 +1,598 @@
+#!/usr/bin/python3 -I
+"""Guard or release an agent on this machine, with a receipt that undoes it exactly.
+
+  harness-guard-setup status [--json]        what is installed and guarded (any user)
+  harness-guard-setup guard AGENT|--detected as root: put AGENT behind its guard
+  harness-guard-setup release AGENT|--all    as root: put back what the receipt recorded
+
+Installed as /usr/sbin/harness-guard-setup. The console runs guard and release through
+pkexec (org.harness-guard.setup, your password every time); the package's postinst
+runs `guard --detected` and its prerm `release --all`.
+
+Before changing anything, guard records the original of everything it will touch
+(file bytes, owner, mode, times, immutable flag, symlink target, diversion, unit,
+device ACL) in /var/lib/harness-guard/receipts/AGENT.json. Guarding again with a
+receipt reapplies the changes (for example newer forwarder text after an upgrade)
+and keeps the original. release undoes the items in reverse order and deletes the
+receipt; an item someone else changed since is left as it is and reported. Releasing
+an agent by name remembers that choice, so `guard --detected` leaves it released.
+"""
+import base64
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+from pathlib import Path
+
+ETC = Path('/etc/harness-guard')
+VAR = Path('/var/lib/harness-guard')
+RECEIPTS = VAR / 'receipts'
+RELEASED = VAR / 'released'
+LAUNCHER = '/usr/libexec/harness-guard/launcher'
+UNIT = 'harness-guard-handoff.socket'
+MAX_INLINE = 1 << 20  # originals larger than this are moved aside, never copied
+
+OWNER = tomllib.loads((ETC / 'owner.toml').read_text())
+USER, UID, HOME = OWNER['user'], int(OWNER['uid']), OWNER['home']
+GID = int(OWNER.get('gid', UID))
+
+CLI_ENTRY = f'{HOME}/.local/bin/claude'
+VERSIONS = f'{HOME}/.local/share/claude/versions'
+CLAUDE_STATE = f'{HOME}/.local/state/claude'
+CLAUDE_BIN = f'{CLAUDE_STATE}/guard-bin'
+AGY_ENTRY = f'{HOME}/.local/bin/agy'
+AGY_STATE = f'{HOME}/.local/state/agy'
+AGY_BIN = f'{AGY_STATE}/guard-bin'
+DESKTOP = '/usr/lib/claude-desktop/claude-desktop'
+APP = '/opt/antigravity/antigravity'
+APP_ENTRY = '/usr/local/bin/antigravity'
+APP_DESKTOP = f'{HOME}/.local/share/applications/antigravity.desktop'
+VSOCK = '/dev/vhost-vsock'
+
+
+class SetupError(Exception):
+    pass
+
+
+def plain(path):
+    """Refuse a path whose folders are symlinks. Some of these folders are writable by a
+    guard (~/.local/state/claude), and root must not follow a link it planted."""
+    parent = os.path.dirname(path)
+    if os.path.realpath(parent) != parent:
+        raise SetupError(f'{parent} is or goes through a symlink; refusing to work there')
+    return path
+
+
+def forwarder(agent):
+    return f'#!/bin/sh\nexec {LAUNCHER} {agent} "$@"\n'.encode()
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def file_sha(path):
+    digest = hashlib.sha256()
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'rb') as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def run(*command, check=True):
+    result = subprocess.run(command, capture_output=True, text=True)
+    if check and result.returncode:
+        raise SetupError(f'{" ".join(command)}: {(result.stderr or result.stdout).strip()}')
+    return result
+
+
+def immutable(path):
+    result = run('/usr/bin/lsattr', '-d', '--', path, check=False)
+    return result.returncode == 0 and 'i' in result.stdout.split()[0]
+
+
+def set_immutable(path, on):
+    run('/usr/bin/chattr', '+i' if on else '-i', '--', path)
+
+
+def describe(path, inline=True):
+    """The state of PATH, enough to recreate it."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return {'kind': 'absent'}
+    meta = {'uid': st.st_uid, 'gid': st.st_gid, 'mode': stat.S_IMODE(st.st_mode),
+            'mtime_ns': st.st_mtime_ns}
+    if stat.S_ISLNK(st.st_mode):
+        return {'kind': 'symlink', 'target': os.readlink(path), **meta}
+    if stat.S_ISDIR(st.st_mode):
+        return {'kind': 'dir', **meta}
+    if not stat.S_ISREG(st.st_mode):
+        raise SetupError(f'{path} is neither a file, a folder nor a symlink')
+    meta.update(kind='file', size=st.st_size, sha256=file_sha(path), immutable=immutable(path))
+    if inline:
+        if st.st_size > MAX_INLINE:
+            raise SetupError(f'{path} is too large to keep in a receipt')
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'rb') as f:
+            meta['data'] = base64.b64encode(f.read()).decode()
+    return meta
+
+
+def remove(path):
+    """Remove a file or symlink, clearing the immutable flag first."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISREG(st.st_mode) and immutable(path):
+        set_immutable(path, False)
+    os.unlink(path)
+
+
+def write(path, data, mode, uid=0, gid=0, frozen=False):
+    """Replace PATH with a new file, atomically, owned and moded as given. A file that is
+    already exactly that is left alone."""
+    try:
+        st = os.lstat(path)
+        if (stat.S_ISREG(st.st_mode) and (st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode)) == (uid, gid, mode)
+                and file_sha(path) == sha(data)):
+            if frozen and not immutable(path):
+                set_immutable(path, True)
+            return
+    except FileNotFoundError:
+        pass
+    directory = os.path.dirname(path)
+    fd, temp = tempfile.mkstemp(dir=directory, prefix='.harness-guard-setup.')
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+        os.chown(temp, uid, gid)
+        os.chmod(temp, mode)
+        if not os.path.islink(path) and os.path.isfile(path) and immutable(path):
+            set_immutable(path, False)
+        os.replace(temp, path)
+    except BaseException:
+        os.unlink(temp)
+        raise
+    if frozen:
+        set_immutable(path, True)
+
+
+def recreate(path, original):
+    """Put back what describe() recorded."""
+    remove(path)
+    kind = original['kind']
+    if kind == 'absent':
+        return
+    if kind == 'symlink':
+        os.symlink(original['target'], path)
+        os.chown(path, original['uid'], original['gid'], follow_symlinks=False)
+    elif kind == 'file':
+        write(path, base64.b64decode(original['data']), original['mode'],
+              original['uid'], original['gid'])
+    else:
+        raise SetupError(f'{path}: cannot recreate a {kind}')
+    os.utime(path, ns=(original['mtime_ns'], original['mtime_ns']), follow_symlinks=False)
+    if original.get('immutable'):
+        set_immutable(path, True)
+
+
+def ours(path, content_sha):
+    """PATH is still the file guard wrote, or gone."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return True
+    return stat.S_ISREG(st.st_mode) and file_sha(path) == content_sha
+
+
+def user_systemctl(*args):
+    return subprocess.run(['/usr/sbin/runuser', '-u', USER, '--', '/usr/bin/env',
+                           f'XDG_RUNTIME_DIR=/run/user/{UID}', '/usr/bin/systemctl', '--user', *args],
+                          capture_output=True, text=True)
+
+
+def truename(path):
+    return run('/usr/bin/dpkg-divert', '--truename', path).stdout.strip()
+
+
+def diverted(path, to):
+    """Whether PATH is diverted. A diversion elsewhere than TO is not ours to build on: the
+    launcher runs TO, so guarding on top of it would leave the agent unable to start."""
+    real = truename(path)
+    if real not in (path, to):
+        raise SetupError(f'{path} is already diverted to {real}, not {to}; remove that diversion '
+                         f'(sudo dpkg-divert --local --rename --remove {path}) and guard again')
+    return real == to
+
+
+def acl_has(path, uid):
+    result = run('/usr/bin/getfacl', '-np', '--', path, check=False)
+    return f'user:{uid}:' in result.stdout
+
+
+def module_loaded(name):
+    return Path('/sys/module', name).exists()
+
+
+# Items: each kind records the original (snap), changes the machine (apply) and puts
+# the original back (undo). Every item is plain JSON in the receipt.
+
+def snap(item):
+    kind, path = item['kind'], item.get('path')
+    if path:
+        plain(path)
+    if kind == 'dir':
+        item['existed'] = os.path.isdir(path)
+    elif kind == 'file':
+        item['original'] = describe(path)
+        item['content_sha256'] = sha(item.pop('content'))
+    elif kind == 'move':
+        item['original'] = describe(path, inline=False)
+        item['content_sha256'] = sha(forwarder(item['agent']))
+    elif kind == 'divert':
+        item['diverted'] = diverted(path, item['to'])
+        item['original'] = describe(path, inline=False)
+        item['content_sha256'] = sha(forwarder(item['agent']))
+    elif kind == 'unit':
+        item['enabled'] = run('/usr/bin/systemctl', '--global', 'is-enabled', UNIT,
+                              check=False).stdout.strip() == 'enabled'
+    elif kind == 'acl':
+        item['had'] = os.path.exists(path) and acl_has(path, UID)
+    elif kind == 'module':
+        item['loaded'] = module_loaded(item['name'])
+    return item
+
+
+def apply(item, content):
+    kind, path = item['kind'], item.get('path')
+    for p in (path, item.get('to')):
+        if p:
+            plain(p)
+    if kind == 'dir':
+        if os.path.islink(path):
+            raise SetupError(f'{path} is a symlink; refusing to work there')
+        if not os.path.isdir(path):
+            os.mkdir(path, 0o700)
+            os.chown(path, UID, GID)
+    elif kind == 'file':
+        original = item['original']
+        uid, gid = (original['uid'], original['gid']) if item.get('keep_owner') else (0, 0)
+        write(path, content, item['mode'], uid, gid, frozen=item.get('frozen', False))
+    elif kind == 'move':
+        if not ours(path, item['content_sha256']):  # the vendor binary is still here
+            if os.path.lexists(item['to']):
+                raise SetupError(f'{item["to"]} already exists; move it away first')
+            os.rename(path, item['to'])
+        write(path, forwarder(item['agent']), 0o755, frozen=True)
+    elif kind == 'divert':
+        if not diverted(path, item['to']):
+            run('/usr/bin/dpkg-divert', '--local', '--rename', '--divert', item['to'], '--add', path)
+        write(path, forwarder(item['agent']), 0o755)
+    elif kind == 'unit':
+        run('/usr/bin/systemctl', '--global', 'enable', UNIT)
+        user_systemctl('daemon-reload')
+        if user_systemctl('start', UNIT).returncode:
+            print(f'{UNIT} starts at your next login.')
+    elif kind == 'acl':
+        if os.path.exists(path):
+            run('/usr/bin/setfacl', '-m', f'u:{UID}:rw', path)
+    elif kind == 'module':
+        run('/usr/sbin/modprobe', item['name'])
+
+
+def undo(item):
+    """Put back the original. Returns a note when something is left as it is."""
+    kind, path = item['kind'], item.get('path')
+    for p in (path, item.get('to')):
+        if p:
+            plain(p)
+    if kind == 'dir':
+        if not item['existed'] and os.path.isdir(path) and not os.path.islink(path):
+            try:
+                os.rmdir(path)
+            except OSError:
+                return f'{path} is not empty; left in place'
+    elif kind == 'file':
+        if not ours(path, item['content_sha256']):
+            return f'{path} changed since it was guarded; left as it is'
+        original = item['original']
+        if (original['kind'] == 'symlink' and item.get('fallback')
+                and not os.path.exists(os.path.join(os.path.dirname(path), original['target']))):
+            target = newest_claude()
+            recreate(path, {**original, 'target': target})
+            return f'{path}: {original["target"]} is gone, so it now points at {target}'
+        recreate(path, original)
+    elif kind == 'move':
+        if not ours(path, item['content_sha256']):
+            return f'{path} changed since it was guarded; {item["to"]} left in place'
+        if not os.path.isfile(item['to']):
+            remove(path)
+            return f'{item["to"]} is gone, so {path} was removed and not restored'
+        remove(path)
+        os.rename(item['to'], path)
+    elif kind == 'divert':
+        if not ours(path, item['content_sha256']):
+            return f'{path} changed since it was guarded; diversion left in place'
+        remove(path)
+        if not item['diverted']:
+            run('/usr/bin/dpkg-divert', '--local', '--rename', '--remove', path)
+    elif kind == 'unit':
+        if not item['enabled']:
+            user_systemctl('stop', UNIT)
+            run('/usr/bin/systemctl', '--global', 'disable', UNIT)
+            user_systemctl('daemon-reload')
+    elif kind == 'acl':
+        if not item['had'] and os.path.exists(path):
+            run('/usr/bin/setfacl', '-x', f'u:{UID}', path)
+    elif kind == 'module':
+        if not item['loaded'] and module_loaded(item['name']):
+            if run('/usr/sbin/modprobe', '-r', item['name'], check=False).returncode:
+                return f'module {item["name"]} is in use; it unloads at the next boot'
+    return None
+
+
+def newest_claude():
+    """Where `claude` should point when its original version was removed by an update."""
+    current = os.path.join(CLAUDE_BIN, 'claude')
+    if os.path.islink(current) and os.path.exists(current):
+        return os.readlink(current)
+    found = [p for p in Path(VERSIONS).iterdir() if re.fullmatch(r'\d+\.\d+\.\d+', p.name)]
+    if not found:
+        raise SetupError(f'no Claude Code version in {VERSIONS}')
+    return str(max(found, key=lambda p: tuple(map(int, p.name.split('.')))))
+
+
+# Agents: what is installed, and the items that guard it.
+
+def detected(agent):
+    if agent == 'claude-code':
+        return os.path.lexists(CLI_ENTRY)
+    if agent == 'claude-desktop':
+        # Diverted anywhere counts, so a diversion that isn't ours is refused, not skipped.
+        return os.path.isfile(DESKTOP) or os.path.isfile(truename(DESKTOP))
+    if agent == 'agy':
+        return os.path.isfile(AGY_ENTRY) or os.path.isfile(f'{AGY_BIN}/agy')
+    if agent == 'antigravity':
+        return os.path.isfile(APP)
+    return False
+
+
+def plan(agent):
+    """The items that guard AGENT, in the order they are applied, with their content."""
+    if agent == 'claude-code':
+        return [{'kind': 'file', 'path': CLI_ENTRY, 'mode': 0o755, 'frozen': True,
+                 'fallback': True, 'content': forwarder(agent)}]
+    if agent == 'claude-desktop':
+        rule = (f'SUBSYSTEM=="misc", KERNEL=="vhost-vsock", '
+                f'RUN+="/usr/bin/setfacl -m u:{UID}:rw {VSOCK}"\n').encode()
+        return [
+            {'kind': 'divert', 'path': DESKTOP, 'to': DESKTOP + '.real', 'agent': agent},
+            # Cowork's VM needs the vhost-vsock device.
+            {'kind': 'file', 'path': '/etc/modules-load.d/claude-cowork.conf', 'mode': 0o644,
+             'content': b'vhost_vsock\n'},
+            {'kind': 'file', 'path': '/etc/udev/rules.d/70-claude-vhost-vsock.rules', 'mode': 0o644,
+             'content': rule},
+            {'kind': 'module', 'name': 'vhost_vsock'},
+            {'kind': 'acl', 'path': VSOCK},
+        ]
+    if agent == 'agy':
+        # The real binary moves into the private view that `agy update` writes. As
+        # Claude's subagent, agy is reached through Claude Code's private ~/.local/bin
+        # and the hand-off socket.
+        return [
+            {'kind': 'dir', 'path': AGY_STATE},
+            {'kind': 'dir', 'path': AGY_BIN},
+            {'kind': 'move', 'path': AGY_ENTRY, 'to': f'{AGY_BIN}/agy', 'agent': agent},
+            {'kind': 'dir', 'path': CLAUDE_STATE},
+            {'kind': 'dir', 'path': CLAUDE_BIN},
+            {'kind': 'file', 'path': f'{CLAUDE_BIN}/agy', 'mode': 0o755, 'frozen': True,
+             'content': forwarder(agent)},
+            {'kind': 'unit'},
+        ]
+    if agent == 'antigravity':
+        items = [{'kind': 'file', 'path': APP_ENTRY, 'mode': 0o755, 'content': forwarder(agent)}]
+        # The menu entry (written by the app's installer) starts the app directly.
+        try:
+            text = Path(APP_DESKTOP).read_bytes()
+        except OSError:
+            text = None
+        if text is not None:
+            entry = f'Exec={APP_ENTRY} %U'.encode()
+            edited = re.sub(rb'^Exec=' + re.escape(APP.encode()) + rb'( %U)?$', entry, text, flags=re.M)
+            if edited != text or re.search(rb'^' + re.escape(entry) + rb'$', text, re.M):
+                items.append({'kind': 'file', 'path': APP_DESKTOP, 'keep_owner': True,
+                              'mode': stat.S_IMODE(os.stat(APP_DESKTOP).st_mode), 'content': edited})
+        return items
+    raise SetupError(f'unknown agent {agent}')
+
+
+def agents():
+    return {p.stem: tomllib.loads(p.read_text()) for p in sorted((ETC / 'agents').glob('*.toml'))}
+
+
+def running(profile):
+    for attr in Path('/proc').glob('[0-9]*/attr/current'):
+        try:
+            if attr.read_text().split(' (')[0].split('//')[0] == profile:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def receipt_path(agent):
+    return RECEIPTS / f'{agent}.json'
+
+
+def save(path, value):
+    RECEIPTS.mkdir(mode=0o755, parents=True, exist_ok=True)
+    temp = path.with_suffix('.new')
+    temp.write_text(json.dumps(value, indent=1) + '\n')
+    temp.chmod(0o644)
+    temp.replace(path)
+
+
+def package_version():
+    result = run('/usr/bin/dpkg-query', '-Wf', '${Version}', 'harness-guard', check=False)
+    return result.stdout.strip() if result.returncode == 0 else ''
+
+
+def key(item):
+    return item['kind'], item.get('path'), item.get('name')
+
+
+def guard(agent, spec):
+    if not detected(agent):
+        raise SetupError(f'{agent} is not installed')
+    if running(spec['profile']):
+        raise SetupError(f'quit {spec.get("name", agent)} first')
+    planned = plan(agent)
+    contents = {key(item): item.get('content') for item in planned}
+    path = receipt_path(agent)
+    if path.exists():
+        # Guarded before: keep the recorded originals, refresh what is written now, and
+        # record items this version adds. Items it no longer plans stay to be released.
+        receipt = json.loads(path.read_text())
+        recorded = {key(item): item for item in receipt['items']}
+        items = [item for item in receipt['items'] if key(item) not in contents]
+        for item in planned:
+            if old := recorded.get(key(item)):
+                if item.get('content') is not None:
+                    old['content_sha256'] = sha(item['content'])
+                items.append(old)
+            else:
+                items.append(snap(dict(item)))
+        receipt['items'] = items
+    else:
+        receipt = {'agent': agent, 'created': int(time.time()), 'package': package_version(),
+                   'items': [snap(dict(item)) for item in planned]}
+    receipt['updated'] = int(time.time())
+    save(path, receipt)  # before the first change, so release can always undo it
+    RELEASED.joinpath(agent).unlink(missing_ok=True)
+    for item in receipt['items']:
+        if key(item) in contents:
+            apply(item, contents[key(item)])
+    print(f'Guarded {agent}; receipt in {path}')
+
+
+def release(agent, spec, remember):
+    path = receipt_path(agent)
+    if not path.exists():
+        print(f'{agent} is not guarded by this package (no receipt)')
+        return []
+    if running(spec['profile']):
+        raise SetupError(f'quit {spec.get("name", agent)} first')
+    receipt = json.loads(path.read_text())
+    notes, left = [], []
+    for item in reversed(receipt['items']):
+        try:
+            if note := undo(item):
+                notes.append(note)
+        except (OSError, SetupError) as error:
+            notes.append(f'FAILED: {error}')
+            left.insert(0, item)
+    if left:
+        receipt['items'] = left
+        save(path, receipt)
+    else:
+        path.unlink()
+    if remember:
+        RELEASED.mkdir(mode=0o755, parents=True, exist_ok=True)
+        RELEASED.joinpath(agent).touch()
+    for note in notes:
+        print(f'{agent}: {note}')
+    print(f'Released {agent}' + (' (some items failed; receipt kept)' if left else ''))
+    return [n for n in notes if n.startswith('FAILED')]
+
+
+def status(as_json):
+    out = []
+    for agent, spec in agents().items():
+        path = receipt_path(agent)
+        receipt = json.loads(path.read_text()) if path.exists() else None
+        out.append({'agent': agent, 'name': spec.get('name', agent), 'present': detected(agent),
+                    'guarded': receipt is not None, 'released': RELEASED.joinpath(agent).exists(),
+                    'created': receipt and receipt['created'], 'package': receipt and receipt.get('package', ''),
+                    'items': [summary(i) for i in receipt['items']] if receipt else []})
+    if as_json:
+        print(json.dumps({'package': package_version(), 'agents': out}))
+        return 0
+    failed = 0
+    for a in out:
+        when = time.strftime('%Y-%m-%d %H:%M', time.localtime(a['created'])) if a['guarded'] else ''
+        if a['guarded']:
+            print(f'  ok    {a["agent"]}: guarded since {when} ({len(a["items"])} items in its receipt)')
+        elif not a['present']:
+            print(f'  ok    {a["agent"]}: not installed')
+        elif a['released']:
+            print(f'  info  {a["agent"]}: installed, released by you')
+        else:
+            print(f'  FAIL  {a["agent"]}: installed but not guarded (no receipt)')
+            failed = 1
+    return failed
+
+
+def summary(item):
+    """One line per receipt item for people: what was there before."""
+    kind, path = item['kind'], item.get('path', '')
+    original = item.get('original', {})
+    before = {'absent': 'absent', 'symlink': f'link to {original.get("target")}',
+              'file': f'file, {original.get("size")} bytes, mode {original.get("mode", 0):o}, uid {original.get("uid")}',
+              }.get(original.get('kind'), '')
+    text = {'dir': f'folder {"existed" if item.get("existed") else "created"}',
+            'file': f'replaced; was {before}',
+            'move': f'moved to {item.get("to")}; was {before}',
+            'divert': f'diverted to {item.get("to")}' + (' (already)' if item.get('diverted') else ''),
+            'unit': f'{UNIT} enabled for all users' + (' (already)' if item.get('enabled') else ''),
+            'acl': f'rw for uid {UID}' + (' (already)' if item.get('had') else ''),
+            'module': f'module {item.get("name")} loaded' + (' (already)' if item.get('loaded') else ''),
+            }[kind]
+    return {'kind': kind, 'path': path or item.get('name', UNIT), 'text': text}
+
+
+def main():
+    args = sys.argv[1:]
+    if args[:1] == ['status'] and args[1:] in ([], ['--json']):
+        return status(args[1:] == ['--json'])
+    if len(args) != 2 or args[0] not in ('guard', 'release'):
+        sys.exit(__doc__.split('\n\n')[1])
+    if os.geteuid() != 0:
+        raise SetupError('run as root (the console uses pkexec)')
+    os.umask(0o022)
+    specs = agents()
+    command, target = args
+    if target == ('--detected' if command == 'guard' else '--all'):
+        failed = []
+        for agent, spec in specs.items():
+            try:
+                if command == 'release':
+                    failed += release(agent, spec, remember=False)
+                elif detected(agent) and not RELEASED.joinpath(agent).exists():
+                    guard(agent, spec)
+            except (OSError, SetupError) as error:
+                failed.append(f'{agent}: {error}')
+                print(f'harness-guard-setup: {agent}: {error}', file=sys.stderr)
+        return 1 if failed else 0
+    if target not in specs:
+        raise SetupError(f'unknown agent {target}')
+    if command == 'guard':
+        guard(target, specs[target])
+        return 0
+    return 1 if release(target, specs[target], remember=True) else 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (OSError, SetupError, KeyError, ValueError, tomllib.TOMLDecodeError) as error:
+        sys.exit(f'harness-guard-setup: {error}')

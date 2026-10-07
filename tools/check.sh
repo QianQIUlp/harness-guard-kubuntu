@@ -1,5 +1,6 @@
 #!/bin/sh
-# Smoke test for the agent guards. Run as qiu from a normal terminal, after install.sh.
+# Smoke test for the agent guards. Run as qiu from a normal terminal, after installing
+# the package. Installed as /usr/libexec/harness-guard/check, which the console runs.
 probe='
     ok() { echo "  ok    $1"; }
     bad() { echo "  FAIL  $1"; failed=1; }
@@ -60,7 +61,7 @@ journalctl -k -b -q -g 'apparmor="DENIED".*profile="(claude-|agy-|antigravity-)'
 echo "policy:"
 [ "$(stat -c %u:%a /etc/harness-guard/policy.toml 2>/dev/null)" = 0:644 ] \
     && echo "  ok    /etc/harness-guard/policy.toml root-owned" || { echo "  FAIL  policy.toml missing or not root-owned 644"; status=1; }
-compiled=$(/usr/local/sbin/harness-guard-apply --print 2>&1)
+compiled=$(/usr/sbin/harness-guard-apply --print 2>&1)
 loaded=$(for f in /etc/apparmor.d/harness-guard/*; do printf '== %s\n%s\n\n' "${f##*/}" "$(cat "$f")"; done)
 [ "$compiled" = "$loaded" ] && echo "  ok    loaded rules match the policy" \
     || { echo "  FAIL  policy changed or invalid; run: sudo harness-guard-apply"; status=1; }
@@ -92,14 +93,32 @@ PY
 [ ! -L /usr/local/bin/antigravity ] && grep -qs harness-guard /usr/local/bin/antigravity \
     && grep -qx 'Exec=/usr/local/bin/antigravity %U' ~/.local/share/applications/antigravity.desktop \
     && echo "  ok    the antigravity command and menu entry go through the launcher" \
-    || { echo "  FAIL  Antigravity starts without the launcher (rerun install.sh after reinstalling it)"; status=1; }
-echo "console:"
+    || { echo "  FAIL  Antigravity starts without the launcher (after reinstalling it, guard it again in the console's Settings)"; status=1; }
+# The program each agent's launcher runs must exist (e.g. Desktop's diverted .real).
+for spec in /etc/harness-guard/agents/*.toml; do
+    exec=$(sed -n 's/^exec = "\([^"]*\)".*$/\1/p' "$spec" | sed "s|^~|$HOME|")
+    [ -x "$exec" ] && echo "  ok    $(basename "$spec" .toml) runs $exec" \
+        || { echo "  FAIL  $(basename "$spec" .toml): $exec is missing (guard it again in the console's Settings)"; status=1; }
+done
+echo "package:"
+[ "$(dpkg-query -Wf '${Status}' harness-guard 2>/dev/null)" = "install ok installed" ] \
+    && echo "  ok    harness-guard $(dpkg-query -Wf '${Version}' harness-guard) is installed" \
+    || { echo "  FAIL  the harness-guard package is not installed (./install.sh)"; status=1; }
 owned=ok
-for file in /usr/local/lib/harness-guard-console/harness-guard-console /usr/local/lib/harness-guard-console/main.qml \
-            /usr/local/libexec/harness-guard-check /usr/share/polkit-1/actions/org.harness-guard.apply.policy; do
+for file in /usr/lib/harness-guard/harness-guard-console /usr/lib/harness-guard/main.qml \
+            /usr/libexec/harness-guard/launcher /usr/libexec/harness-guard/check \
+            /usr/sbin/harness-guard-apply /usr/sbin/harness-guard-setup \
+            /usr/share/polkit-1/actions/org.harness-guard.policy /etc/harness-guard/owner.toml; do
     [ "$(stat -c %u "$file" 2>/dev/null)" = 0 ] && [ $(( 0$(stat -c %a "$file") & 022 )) = 0 ] || owned=
 done
-[ -n "$owned" ] && [ "$(readlink /usr/local/bin/harness-guard-console)" = /usr/local/lib/harness-guard-console/harness-guard-console ] \
-    && echo "  ok    the console and its pkexec action are installed root-owned" \
-    || { echo "  FAIL  console files missing or writable by others (rerun install.sh)"; status=1; }
+[ -n "$owned" ] && [ "$(readlink -f /usr/bin/harness-guard-console)" = /usr/lib/harness-guard/harness-guard-console ] \
+    && echo "  ok    the programs and their pkexec actions are installed root-owned" \
+    || { echo "  FAIL  program files missing or writable by others (reinstall the package)"; status=1; }
+old=$(ls -d /usr/local/libexec/harness-guard* /usr/local/sbin/harness-guard-apply /usr/local/lib/harness-guard-console \
+      /usr/local/bin/harness-guard-console /etc/systemd/user/harness-guard-handoff* \
+      /usr/local/share/icons/hicolor/scalable/apps/harness-guard-console.svg 2>/dev/null)
+[ -z "$old" ] && echo "  ok    nothing left of the old /usr/local layout" \
+    || { echo "$old" | sed 's/^/  FAIL  left from the old layout: /'; status=1; }
+echo "receipts:"
+/usr/sbin/harness-guard-setup status || status=1
 exit $status

@@ -8,7 +8,7 @@
 abi <abi/5.0>,
 include <tunables/global>
 
-profile harness-guard-launcher /usr/local/libexec/harness-guard {
+profile harness-guard-launcher /usr/libexec/harness-guard/launcher {
   include <abstractions/base>
   /** rwlkm,
   /usr/** rix,

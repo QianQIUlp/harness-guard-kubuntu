@@ -1,0 +1,101 @@
+#!/bin/sh
+# harness-guard postinst: write the owner and policy once, compile the GTK defaults,
+# clean up the old /usr/local layout, load the profiles, and guard every agent that is
+# installed (except those you released). Each guard keeps a receipt in
+# /var/lib/harness-guard/receipts, which prerm uses to put the machine back.
+set -e
+
+ETC=/etc/harness-guard
+SHARE=/usr/share/harness-guard
+
+owner() { sed -n "s/^$1 = \"\{0,1\}\([^\"]*\)\"\{0,1\}\$/\1/p" "$ETC/owner.toml"; }
+
+# The old install.sh layout (until 0.7): programs in /usr/local and forwarders that
+# point there. Put every agent back the way that layout's uninstall did, so the first
+# guard below records the original, not the old guard.
+cleanup_legacy() {
+    [ -e /usr/local/libexec/harness-guard ] || return 0
+    echo "harness-guard: removing the old /usr/local layout"
+    home=$(owner home) user=$(owner user) uid=$(owner uid)
+    legacy() { [ -f "$1" ] && [ ! -L "$1" ] && grep -qs /usr/local/libexec/harness-guard "$1"; }
+    drop() { chattr -i "$1" 2>/dev/null || true; rm -f "$1"; }
+
+    if legacy "$home/.local/bin/claude"; then
+        version=$(readlink "$home/.local/state/claude/guard-bin/claude" || true)
+        [ -n "$version" ] || version="$home/.local/share/claude/versions/$(ls -v "$home/.local/share/claude/versions" | tail -n 1)"
+        drop "$home/.local/bin/claude"
+        ln -s "$version" "$home/.local/bin/claude"
+        chown -h "$user:" "$home/.local/bin/claude"
+    fi
+    legacy "$home/.local/state/claude/guard-bin/agy" && drop "$home/.local/state/claude/guard-bin/agy"
+    if legacy "$home/.local/bin/agy" && [ -f "$home/.local/state/agy/guard-bin/agy" ]; then
+        drop "$home/.local/bin/agy"
+        mv "$home/.local/state/agy/guard-bin/agy" "$home/.local/bin/agy"
+        rmdir "$home/.local/state/agy/guard-bin" 2>/dev/null || true
+    fi
+    if [ -e /etc/systemd/user/harness-guard-handoff.socket ]; then
+        runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user stop harness-guard-handoff.socket 2>/dev/null || true
+        systemctl --global disable harness-guard-handoff.socket 2>/dev/null || true
+        rm -f /etc/systemd/user/harness-guard-handoff.socket /etc/systemd/user/harness-guard-handoff@.service \
+              /etc/systemd/user/sockets.target.wants/harness-guard-handoff.socket
+        runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user daemon-reload 2>/dev/null || true
+    fi
+    if legacy /usr/local/bin/antigravity; then
+        rm -f /usr/local/bin/antigravity
+        ln -s /opt/antigravity/antigravity /usr/local/bin/antigravity
+    fi
+    desktop="$home/.local/share/applications/antigravity.desktop"
+    if [ -f "$desktop" ] && grep -qx 'Exec=/usr/local/bin/antigravity %U' "$desktop"; then
+        sed -i 's|^Exec=/usr/local/bin/antigravity %U$|Exec=/opt/antigravity/antigravity %U|' "$desktop"
+        chown "$user:" "$desktop"
+    fi
+    if legacy /usr/lib/claude-desktop/claude-desktop; then
+        rm -f /usr/lib/claude-desktop/claude-desktop
+        dpkg-divert --local --rename --remove /usr/lib/claude-desktop/claude-desktop
+    fi
+    rm -f /etc/modules-load.d/claude-cowork.conf /etc/udev/rules.d/70-claude-vhost-vsock.rules
+    [ ! -e /dev/vhost-vsock ] || setfacl -x "u:$uid" /dev/vhost-vsock 2>/dev/null || true
+
+    # The old launcher profile name is reused; the new file replaces it below.
+    rm -f /usr/local/libexec/harness-guard /usr/local/libexec/harness-guard-handoff \
+          /usr/local/libexec/harness-guard-check /usr/local/sbin/harness-guard-apply \
+          /usr/local/bin/harness-guard-console /usr/local/share/applications/harness-guard-console.desktop \
+          /usr/local/share/icons/hicolor/scalable/apps/harness-guard-console.svg \
+          /usr/share/polkit-1/actions/org.harness-guard.apply.policy
+    rm -rf /usr/local/libexec/harness-guard-bin /usr/local/lib/harness-guard-console
+}
+
+case "$1" in
+configure)
+    install -d -m 755 "$ETC" /var/lib/harness-guard
+    [ -e "$ETC/owner.toml" ] || install -m 644 "$SHARE/owner.toml" "$ETC/owner.toml"
+    [ -e "$ETC/policy.toml" ] || install -m 644 "$SHARE/policy.toml" "$ETC/policy.toml"
+    # A newly added agent gets its default section; the owner's other choices stay.
+    for spec in "$ETC"/agents/*.toml; do
+        agent=$(basename "$spec" .toml)
+        grep -q "^\[agents\.$agent\]" "$ETC/policy.toml" && continue
+        { echo; awk -v h="[agents.$agent]" '/^\[/ { on = ($0 == h) } on' "$SHARE/policy.toml"; } \
+            >> "$ETC/policy.toml"
+        echo "harness-guard: added [agents.$agent] to $ETC/policy.toml"
+    done
+
+    # GTK defaults with minimize/maximize/close buttons, built from the system schema.
+    schemas=$(mktemp -d)
+    cp /usr/share/glib-2.0/schemas/org.gnome.desktop.wm.preferences.gschema.xml \
+       /usr/share/glib-2.0/schemas/org.gnome.desktop.enums.xml "$SHARE/gtk.gschema.override" "$schemas"
+    install -d -m 755 "$ETC/gtk-schemas"
+    glib-compile-schemas --strict --targetdir="$ETC/gtk-schemas" "$schemas"
+    rm -r "$schemas"
+
+    cleanup_legacy
+
+    # Compiles the policy into /etc/apparmor.d/harness-guard/ and loads the agent profiles.
+    /usr/sbin/harness-guard-apply
+    apparmor_parser -r -W /etc/apparmor.d/harness-guard-launcher
+
+    /usr/sbin/harness-guard-setup guard --detected || {
+        echo "harness-guard: some agents were not guarded (see above); guard them in the console's Settings." >&2
+    }
+    ;;
+esac
+exit 0

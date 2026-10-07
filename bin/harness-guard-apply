@@ -8,7 +8,7 @@
                                       apply it; refused unless the current policy.toml
                                       has that SHA-256 (the console runs this via pkexec)
 
-Installed as /usr/local/sbin/harness-guard-apply. Each agent's rules go to
+Installed as /usr/sbin/harness-guard-apply. Each agent's rules go to
 /etc/apparmor.d/harness-guard/ID, which its profile includes. Replacing a loaded
 profile switches running processes to the new rules, so no restart is needed.
 """
@@ -22,15 +22,16 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-HOME = '/home/qiu'
 ETC = Path('/etc/harness-guard')
+OWNER = tomllib.loads((ETC / 'owner.toml').read_text())
+USER, HOME = OWNER['user'], OWNER['home']
 APPARMOR = Path('/etc/apparmor.d')
 OUT = APPARMOR / 'harness-guard'
 PARSER = '/usr/sbin/apparmor_parser'
 
 ACCESS = {'r': 'r', 'rx': 'rmix', 'rw': 'rwk', 'rwx': 'rwkmix'}
 # Only these hold the owner's files; write grants elsewhere are refused.
-OWNED = (f'{HOME}/', '/run/media/qiu/', '/media/qiu/')
+OWNED = (f'{HOME}/', f'/run/media/{USER}/', f'/media/{USER}/')
 # Unguarded programs run or read config from these, so no agent may write them.
 # Keys, wallets and browser profiles are also denied in abstractions/harness-guard.
 PROTECTED = tuple(f'{HOME}/{p}' for p in (

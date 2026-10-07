@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Tray: every guard holds. -->
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="#252825"/>
+  <rect x="62" y="62" width="132" height="132" fill="none" stroke="#eeede7" stroke-width="30"/>
+  <rect x="102" y="102" width="52" height="52" fill="#eeede7"/>
+</svg>

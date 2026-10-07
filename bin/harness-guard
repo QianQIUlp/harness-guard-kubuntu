@@ -1,8 +1,9 @@
 #!/usr/bin/python3 -I
 """Start a coding agent inside its AppArmor guard: harness-guard AGENT [ARGS...]
 
-Installed as /usr/local/libexec/harness-guard and reached through root-owned
-forwarders, e.g. ~/.local/bin/claude runs `harness-guard claude-code "$@"`.
+Installed as /usr/libexec/harness-guard/launcher and reached through root-owned
+forwarders, e.g. ~/.local/bin/claude runs `launcher claude-code "$@"`. The user it
+runs for comes from /etc/harness-guard/owner.toml.
 How each agent runs comes from /etc/harness-guard/agents/AGENT.toml, and whether it
 gets the GitHub token from /etc/harness-guard/policy.toml. Fails closed if the
 agent's profile is missing or not enforcing. Inside a guard listed in the agent's
@@ -19,11 +20,11 @@ import sys
 import tomllib
 from pathlib import Path
 
-HOME = Path('/home/qiu')
-UID = 1000
-NODE = HOME / '.nvm/versions/node/v22.23.2'
-GUARD_BIN = '/usr/local/libexec/harness-guard-bin'
 ETC = Path('/etc/harness-guard')
+OWNER = tomllib.loads((ETC / 'owner.toml').read_text())
+USER, UID, HOME = OWNER['user'], int(OWNER['uid']), Path(OWNER['home'])
+NODE = HOME / '.nvm/versions/node/v22.23.2'
+GUARD_BIN = '/usr/libexec/harness-guard/bin'
 HANDOFF = f'/run/user/{UID}/harness-guard-handoff.sock'
 
 KEEP = ('TERM', 'COLORTERM', 'LANG', 'LC_ALL', 'LC_CTYPE', 'NO_COLOR', 'GH_HOST',
@@ -59,7 +60,7 @@ def environment(spec, policy):
     cache = expand(spec['cache'])
     env = {k: v for k, v in os.environ.items() if k in KEEP + tuple(spec.get('keep_env', ()))}
     env.update({
-        'HOME': str(HOME), 'USER': 'qiu', 'LOGNAME': 'qiu',
+        'HOME': str(HOME), 'USER': USER, 'LOGNAME': USER,
         'PATH': f'{GUARD_BIN}:{NODE}/bin:{HOME}/.cargo/bin:{HOME}/.local/bin:/usr/bin:/bin',
         'BROWSER': f'{GUARD_BIN}/xdg-open',
         'XDG_RUNTIME_DIR': f'/run/user/{UID}',
@@ -155,7 +156,7 @@ def main():
         raise RuntimeError('usage: harness-guard AGENT [ARGS...]')
     agent, args = sys.argv[1], sys.argv[2:]
     if os.getuid() != UID:
-        raise RuntimeError('run as qiu')
+        raise RuntimeError(f'run as {USER}')
     specs = {p.stem: tomllib.loads(p.read_text()) for p in (ETC / 'agents').glob('*.toml')}
     if agent not in specs:
         raise RuntimeError(f'unknown agent {agent}')

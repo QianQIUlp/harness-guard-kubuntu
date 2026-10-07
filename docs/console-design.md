@@ -98,8 +98,9 @@ rename need the directory.
 
 ## Security of the console itself
 
-- The console and compiler are installed root-owned under `/usr/local`, never run from
-  this checkout, because `~/src` is writable by agents.
+- The console and compiler are installed root-owned by the package (`/usr/lib`,
+  `/usr/libexec`, `/usr/sbin`), never run from this checkout, because `~/src` is
+  writable by agents.
 - Applying needs root through `pkexec` with `auth_admin` (your password every time).
   Every guard denies `pkexec`/`sudo` and sets `no_new_privs`, so no agent can apply
   policy. The console exposes no D-Bus or socket API an agent could drive.
@@ -155,7 +156,8 @@ The other agents in the table stay unguarded until later.
 5. Done: the console's own look and an agent-centred layout (below).
 6. Done: state as colour, starting and stopping agents, history, tray and
    notifications (below).
-7. Next: one application that installs, updates and removes everything (below).
+7. Built, waiting for the owner's install check: one application that installs,
+   updates and removes everything (below).
 
 ## Look
 
@@ -178,7 +180,7 @@ system. The controls are drawn by the console (Qt Quick Basic), not Breeze.
 
 ## Running agents from the console
 
-Start runs `/usr/local/libexec/harness-guard AGENT` directly, never the entry point
+Start runs `/usr/libexec/harness-guard/launcher AGENT` directly, never the entry point
 (which may no longer be the forwarder), so it fails closed like any other start. CLI
 agents (`terminal = true` in their spec) open in Konsole in a folder you choose,
 remembered per agent. Stop sends SIGTERM to every process whose label is the agent's
@@ -197,11 +199,11 @@ has focus. "Start at login" writes the user's own autostart entry for `--tray`. 
 second start signals the first (SIGUSR1, after checking that PID is a console of this
 user) to show its window, so there is still no socket.
 
-## One application (plan)
+## One application
 
-Today `install.sh` is the installer, run from this checkout, with paths for one user
-on one machine. The goal is an application you install once, from a release, and
-remove once, leaving the machine as it was:
+Until 0.7 `install.sh` was the installer, run as root from this checkout, with paths
+for one user on one machine. Now it is an application you install once, from a
+release, and remove once, leaving the machine as it was:
 
 - **A Debian package** (`harness-guard_VERSION_all.deb`, built by a script in this
   repository and attached to releases). Kubuntu installs it with a double click
@@ -219,9 +221,17 @@ remove once, leaving the machine as it was:
   `/var/lib/harness-guard/receipts/AGENT.json`; `release` puts exactly that back. The
   package's `prerm` releases every agent, so uninstalling restores the machine.
 - **Per machine, not per `qiu`.** The user, home and UID come from
-  `/etc/harness-guard/owner.toml` (written at first run), and the profiles are
-  generated from them, like the policy rules are today.
+  `/etc/harness-guard/owner.toml`, which postinst writes once (still `qiu` for now) and
+  which the launcher, hand-off, compiler, setup helper and console read. Next: generate
+  the profiles from it, like the policy rules, instead of naming `/home/qiu`.
 - **Detecting agents** (later): the agent specs ship in the package; the console
   shows those whose vendor binaries exist, and "Guard it" runs the setup action.
-- The development path stays: `sudo ./install.sh` builds the package from this
-  checkout and installs it, so there is one way in and one way out.
+- The development path stays: `./install.sh` builds the package from this checkout
+  as you (`fakeroot`) and `sudo apt install`s it, so there is one way in and one way
+  out, and no root code runs from `~/src`.
+- **Upgrades** keep the receipts: prerm releases only on removal, and the new
+  postinst reapplies each guard (newer forwarder text), keeping the recorded originals
+  and recording only items the new version adds. Installing over the old
+  `/usr/local` layout first undoes it, so the first receipts record the original
+  machine. An agent you release by name stays released across upgrades until you
+  guard it again (or purge).
