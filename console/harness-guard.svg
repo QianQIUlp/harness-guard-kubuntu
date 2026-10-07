@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- An agent (the red square) held inside its guard (the frame). -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#252825"/>
+  <rect x="66" y="66" width="124" height="124" fill="none" stroke="#eeede7" stroke-width="26"/>
+  <rect x="104" y="104" width="48" height="48" fill="#e83d27"/>
+</svg>

@@ -60,8 +60,9 @@ install)
     install -m 755 bin/harness-guard-apply /usr/local/sbin/harness-guard-apply
     # The console runs unguarded, so it is installed root-owned and never run from here.
     install -m 755 -D -t "$CONSOLE" console/harness-guard-console
-    rm -f "$CONSOLE"/*.qml "$CONSOLE/qmldir"
-    install -m 644 console/*.qml console/qmldir "$CONSOLE/"
+    rm -f "$CONSOLE"/*.qml "$CONSOLE"/*.svg "$CONSOLE/qmldir"
+    install -m 644 console/*.qml console/*.svg console/qmldir "$CONSOLE/"
+    install -m 644 -D console/harness-guard.svg /usr/local/share/icons/hicolor/scalable/apps/harness-guard-console.svg
     ln -sfn "$CONSOLE/harness-guard-console" /usr/local/bin/harness-guard-console
     install -m 755 tools/check.sh "$LIBEXEC/harness-guard-check"
     install -m 644 console/org.harness-guard.apply.policy /usr/share/polkit-1/actions/
@@ -190,6 +191,7 @@ uninstall)
           "$LIBEXEC/harness-guard-check" /usr/local/bin/harness-guard-console \
           /usr/share/polkit-1/actions/org.harness-guard.apply.policy \
           /usr/local/share/applications/harness-guard-console.desktop \
+          /usr/local/share/icons/hicolor/scalable/apps/harness-guard-console.svg \
           /etc/modules-load.d/claude-cowork.conf /etc/udev/rules.d/70-claude-vhost-vsock.rules
     rm -rf /etc/apparmor.d/harness-guard "$LIBEXEC/harness-guard-bin" "$CONSOLE" /etc/harness-guard/agents \
            /etc/harness-guard/gitconfig /etc/harness-guard/gtk-schemas

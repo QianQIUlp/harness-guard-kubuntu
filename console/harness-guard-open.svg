@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Tray: a guard is open; the frame is broken and the agent is out. -->
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="#e83d27"/>
+  <path d="M120 62H62V194H194V136" fill="none" stroke="#fffaf2" stroke-width="30"/>
+  <rect x="140" y="50" width="66" height="66" fill="#fffaf2"/>
+</svg>
