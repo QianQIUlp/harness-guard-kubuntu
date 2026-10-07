@@ -1,0 +1,17 @@
+# How harness-guard runs the Antigravity CLI. Installed to /etc/harness-guard/agents/.
+# Paths may start with ~/ for /home/qiu/.
+profile = "agy-guard"
+exec = "~/.local/bin/agy"  # inside the private view below
+argv0 = "agy"
+cache = "~/.cache/agy-guard"
+tmp = "/tmp/agy-1000"
+
+# `agy update` rewrites ~/.local/bin/agy; it sees a private writable copy while the
+# host file stays a root-owned forwarder.
+binds = [["~/.local/state/agy/guard-bin", "~/.local/bin"]]
+
+[env]
+# agy keeps its login in the Secret Service, which holds every app's secrets and can't
+# be limited to one entry. In an SSH session it uses its own file instead
+# (~/.gemini/antigravity-cli/antigravity-oauth-token), so the guard looks like one.
+SSH_CONNECTION = "127.0.0.1 1 127.0.0.1 22"

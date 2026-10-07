@@ -112,9 +112,27 @@ Scope for now: Claude Code, Claude Desktop, the Antigravity IDE and the `agy` CL
 The other agents in the table stay unguarded until later.
 
 1. Done: Claude fixes (private `/dev/pts`, entry profile, check additions).
-2. Written, waiting for install: spec format, compiler and generic launcher, Claude ported. The expanded
+2. Done: spec format, compiler and generic launcher, Claude ported. The expanded
    profiles match the hand-written ones except the new names and an added deny for
    `~/.local/share/{kwalletd,keyrings}`.
-3. Antigravity IDE and `agy`: survey (`tools/survey-antigravity.sh`), credentials
-   decision, profiles, checks.
+3. Antigravity app and `agy`. agy: done (`agy-guard`, file login, keyring denied),
+   installed and checked 2026-10-07. The app is next. Known so far:
+   - The app is an Electron build in `/opt/antigravity`, owned by qiu (not a package),
+     with a Go `language_server`; its browser agent drives `/opt/google/chrome`. State in
+     `~/.config/Antigravity` and `~/.cache/antigravity`; `antigravity://` links.
+   - `agy` 1.2.16 is a qiu-owned binary in `~/.local/bin` with `agy update`; state in
+     `~/.gemini` (`config/`, `antigravity-cli/`).
+   - The owner wants agy limited to its own credential. KWallet's Secret Service gives
+     items counter-based object paths (`<collection>/<n>`, renumbered on restart), and
+     `GetSecrets` takes any item list, so AppArmor D-Bus rules can't pin one entry.
+     Round 2 confirmed agy uses the Secret Service (`SearchItems` on the default alias
+     with `service=gemini`, then `GetSecret` on one item) and fails without it. agy
+     switches to file storage (`~/.gemini/antigravity-cli/antigravity-oauth-token`)
+     when it sees an SSH session (`SSH_CONNECTION` and similar, per
+     soyelmismo/hermes-antigravity-subscription#18 on 1.2.14). If that works on 1.2.16,
+     the agy guard sets it and denies the keyring; otherwise the owner accepts
+     Secret Service access for agy. Confirmed on 1.2.16: with the keyring
+     unreachable, a fresh `agy --print` used the file login.
+   - agy 1.0.x's container file storage was write-only
+     (google-antigravity/antigravity-cli#479), so test that a fresh process reads it.
 4. Console UI for the four agents.

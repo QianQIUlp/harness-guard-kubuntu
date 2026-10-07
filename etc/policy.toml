@@ -1,5 +1,6 @@
 # Your choices per agent. Installed once to /etc/harness-guard/policy.toml (root-owned);
-# install.sh never overwrites it. After editing, apply it live (no agent restart):
+# install.sh never overwrites it, only appends the section of a newly added agent.
+# After editing, apply it live (no agent restart):
 #   sudo -e /etc/harness-guard/policy.toml && sudo harness-guard-apply
 #
 # paths: access is "none", "r", "rx", "rw" or "rwx". A path ending in / (or an existing
@@ -19,6 +20,13 @@ paths = [
 ]
 
 [agents.claude-desktop]
+github_token = true
+paths = [
+  { path = "~/src/", access = "rwx" },
+  { path = "~/.agents/skills/", access = "rx" },
+]
+
+[agents.agy]
 github_token = true
 paths = [
   { path = "~/src/", access = "rwx" },

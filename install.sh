@@ -12,7 +12,9 @@ LIBEXEC=/usr/local/libexec
 DESKTOP=/usr/lib/claude-desktop/claude-desktop
 CLI_ENTRY=/home/qiu/.local/bin/claude
 VERSIONS=/home/qiu/.local/share/claude/versions
-PROFILES="claude-code-guard claude-desktop-guard"
+AGY_ENTRY=/home/qiu/.local/bin/agy
+AGY_BIN=/home/qiu/.local/state/agy/guard-bin
+PROFILES="claude-code-guard claude-desktop-guard agy-guard"
 
 [ "$(id -u)" = 0 ] || { echo "Run with sudo." >&2; exit 1; }
 for profile in $PROFILES; do
@@ -38,7 +40,7 @@ install)
     done
 
     install -m 644 -D -t /etc/apparmor.d/abstractions apparmor/abstractions/harness-guard \
-        apparmor/abstractions/harness-guard-claude
+        apparmor/abstractions/harness-guard-claude apparmor/abstractions/harness-guard-antigravity
     for profile in harness-guard-launcher $PROFILES; do
         install -m 644 "apparmor/$profile" /etc/apparmor.d/
     done
@@ -48,6 +50,14 @@ install)
     install -m 644 -D -t /etc/harness-guard/agents agents/*.toml
     install -m 644 etc/gitconfig /etc/harness-guard/gitconfig
     [ -e /etc/harness-guard/policy.toml ] || install -m 644 etc/policy.toml /etc/harness-guard/policy.toml
+    # A newly added agent gets its default section; the owner's other choices stay.
+    for spec in agents/*.toml; do
+        agent=$(basename "$spec" .toml)
+        grep -q "^\[agents\.$agent\]" /etc/harness-guard/policy.toml && continue
+        { echo; awk -v h="[agents.$agent]" '/^\[/ { on = ($0 == h) } on' etc/policy.toml; } \
+            >> /etc/harness-guard/policy.toml
+        echo "Added [agents.$agent] to /etc/harness-guard/policy.toml"
+    done
 
     # GTK defaults with minimize/maximize/close buttons, built from the system schema.
     schemas=$(mktemp -d)
@@ -64,6 +74,17 @@ install)
     put "$CLI_ENTRY" 755 '#!/bin/sh
 exec /usr/local/libexec/harness-guard claude-code "$@"'
     chattr +i "$CLI_ENTRY"
+
+    # agy: the real binary moves into the private view that `agy update` writes.
+    if [ -f "$AGY_ENTRY" ] && [ ! -L "$AGY_ENTRY" ] && [ "$(stat -c %u "$AGY_ENTRY")" != 0 ]; then
+        install -d -o qiu -g qiu -m 700 /home/qiu/.local/state/agy "$AGY_BIN"
+        mv "$AGY_ENTRY" "$AGY_BIN/agy"
+    fi
+    if [ -f "$AGY_BIN/agy" ]; then
+        put "$AGY_ENTRY" 755 '#!/bin/sh
+exec /usr/local/libexec/harness-guard agy "$@"'
+        chattr +i "$AGY_ENTRY"
+    fi
 
     [ "$(dpkg-divert --truename "$DESKTOP")" != "$DESKTOP" ] ||
         dpkg-divert --local --rename --add "$DESKTOP"
@@ -95,6 +116,12 @@ uninstall)
     ln -s "$version" "$CLI_ENTRY"
     chown -h qiu:qiu "$CLI_ENTRY"
 
+    if [ -f "$AGY_BIN/agy" ]; then
+        chattr -i "$AGY_ENTRY" 2>/dev/null || true
+        rm -f "$AGY_ENTRY"
+        mv "$AGY_BIN/agy" "$AGY_ENTRY"
+    fi
+
     rm -f "$DESKTOP"
     dpkg-divert --local --rename --remove "$DESKTOP"
 
@@ -103,12 +130,13 @@ uninstall)
         rm -f "/etc/apparmor.d/$profile"
     done
     rm -f /etc/apparmor.d/abstractions/harness-guard /etc/apparmor.d/abstractions/harness-guard-claude \
+          /etc/apparmor.d/abstractions/harness-guard-antigravity \
           "$LIBEXEC/harness-guard" /usr/local/sbin/harness-guard-apply \
           /etc/modules-load.d/claude-cowork.conf /etc/udev/rules.d/70-claude-vhost-vsock.rules
     rm -rf /etc/apparmor.d/harness-guard "$LIBEXEC/harness-guard-bin" /etc/harness-guard/agents \
            /etc/harness-guard/gitconfig /etc/harness-guard/gtk-schemas
     setfacl -x u:1000 /dev/vhost-vsock 2>/dev/null || true
-    echo "Removed. Your policy stays in /etc/harness-guard/policy.toml. Claude Code now points at $version."
+    echo "Removed. Your policy stays in /etc/harness-guard/policy.toml. Claude Code now points at $version; agy is back in ~/.local/bin."
     ;;
 
 *)

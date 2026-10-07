@@ -1,6 +1,7 @@
 # harness-guard-kubuntu
 
-Kernel-enforced limits for Claude Code (CLI) and Claude Desktop on one Kubuntu machine
+Kernel-enforced limits for Claude Code (CLI), Claude Desktop and the Antigravity CLI
+(`agy`) on one Kubuntu machine
 (`tele`, user `qiu`, UID 1000, KDE on Wayland).
 
 The models can't be trusted to restrict themselves, so the limits live outside them, in
@@ -20,19 +21,19 @@ AppArmor. The guard has three goals:
 ## How it works
 
 ```text
-claude / Desktop menu
-  -> root-owned forwarder (~/.local/bin/claude, /usr/lib/claude-desktop/claude-desktop)
+claude / agy / Desktop menu
+  -> root-owned forwarder (~/.local/bin/{claude,agy}, /usr/lib/claude-desktop/claude-desktop)
   -> /usr/local/libexec/harness-guard AGENT (Python, runs as qiu; how to run each
      agent comes from /etc/harness-guard/agents/AGENT.toml)
        allowlisted environment, fetch GitHub token, close inherited descriptors,
        switch itself into the AppArmor profile, verify "(enforce)", set no_new_privs,
        enter a private mount namespace with its own /dev/pts (your other terminals
-       don't exist inside), CLI: bind a private dir over ~/.local/bin for the updater
+       don't exist inside), CLIs: bind a private dir over ~/.local/bin for the updater
   -> vendor binary; every child inherits the same profile
 ```
 
-The profiles also attach by path (`~/.local/share/claude/versions/*` and
-`claude-desktop.real`), so running a vendor binary directly is still confined. If the
+The profiles also attach by path (`~/.local/share/claude/versions/*`,
+`claude-desktop.real` and `~/.local/state/agy/guard-bin/agy`), so running a vendor binary directly is still confined. If the
 profile is missing or only complaining, the launcher refuses to start; it never falls
 back to running unconfined.
 
@@ -43,6 +44,8 @@ back to running unconfined.
 | `apparmor/harness-guard-launcher` | `/etc/apparmor.d/harness-guard-launcher`: entry profile so a launch from a terminal switches cleanly |
 | `apparmor/claude-code-guard` | `/etc/apparmor.d/claude-code-guard` |
 | `apparmor/claude-desktop-guard` | `/etc/apparmor.d/claude-desktop-guard`: Desktop GUI, tray, portals, KWallet, Cowork |
+| `apparmor/abstractions/harness-guard-antigravity` | `/etc/apparmor.d/abstractions/harness-guard-antigravity`: Antigravity's state in `~/.gemini` |
+| `apparmor/agy-guard` | `/etc/apparmor.d/agy-guard` |
 | `agents/*.toml` | `/etc/harness-guard/agents/`: how the launcher runs each agent |
 | `etc/policy.toml` | `/etc/harness-guard/policy.toml`, created once: your path choices per agent |
 | `bin/harness-guard` | `/usr/local/libexec/harness-guard`: the launcher |
@@ -51,10 +54,11 @@ back to running unconfined.
 | `etc/gitconfig` | `/etc/harness-guard/gitconfig` |
 | `etc/gtk.gschema.override` | compiled into `/etc/harness-guard/gtk-schemas/` |
 
-`install.sh` also writes the two forwarders, keeps the packaged Desktop ELF diverted to
-`claude-desktop.real`, and sets up Cowork's `vhost_vsock` access. The CLI forwarder
-`~/.local/bin/claude` is root-owned and immutable (`chattr +i`) so Claude can't replace
-it with an unconfined program; `install.sh uninstall` removes it.
+`install.sh` also writes the forwarders, keeps the packaged Desktop ELF diverted to
+`claude-desktop.real`, moves the real `agy` to `~/.local/state/agy/guard-bin/`, and sets
+up Cowork's `vhost_vsock` access. The CLI forwarders `~/.local/bin/{claude,agy}` are
+root-owned and immutable (`chattr +i`) so an agent can't replace them with an
+unconfined program; `install.sh uninstall` removes them and puts `agy` back.
 
 ## What Claude can and cannot do
 
@@ -70,6 +74,13 @@ it with an unconfined program; `install.sh uninstall` removes it.
 | Desktop session | Wayland, audio, notifications, tray, URI/file-chooser/settings/shortcut portals |
 | KWallet | open the wallet and `readPassword` only (see limits) |
 | **Denied** | autostart and systemd user units; the rest of `$HOME`, including `~/.ssh`, `~/.gnupg`, cloud/browser/proxy configs, `~/.config/gh`, `~/.gitconfig`, and shell history; writes to shell startup files; sudo/su/pkexec; Docker/containerd sockets; other D-Bus services (systemd, Secret Service, ...) |
+
+**agy** gets the same base rules and policy paths, plus its own state
+(`~/.gemini/config`, `~/.gemini/antigravity-cli`). It never reaches the keyring: the
+launcher sets `SSH_CONNECTION`, which makes agy keep its login in
+`~/.gemini/antigravity-cli/antigravity-oauth-token` instead of the Secret Service (which
+can't be limited to one entry). Sign in once inside the guard; sign-in may show a link
+to open instead of opening the browser. The Claude guards can't read that folder.
 
 Claude Code's own bubblewrap sandbox (`sandbox.enabled`) is not supported inside the
 guard and must stay disabled. AppArmor enforces the boundary instead. `bin/bwrap`
@@ -90,8 +101,9 @@ Quit Claude Code and Claude Desktop before installing; the script refuses otherw
 Editing this repository changes nothing until `install.sh` runs. Inside the guard,
 sudo is denied, so Claude can propose changes here but cannot apply them.
 
-`claude update` and `claude install <version>` work normally. The updater writes its
-link into `~/.local/state/claude/guard-bin`, which the launcher shows as `~/.local/bin`.
+`claude update`, `claude install <version>` and `agy update` work normally. The updaters
+write into `~/.local/state/{claude,agy}/guard-bin`, which the launcher shows as
+`~/.local/bin`.
 Desktop package updates go to the diverted `.real` file and need no action.
 
 **Choosing paths per agent:** edit the policy and apply it. Running agents get the new
@@ -124,6 +136,12 @@ Keys, wallets and browser profiles stay denied whatever the policy says.
 - **KWallet `readPassword`** can't be limited to Claude's own entries, so Desktop can
   read any password entry once the wallet is open. Wallet writes and other read methods
   are denied.
+- **Antigravity app not guarded yet.** It reads `~/.gemini/config` (MCP servers,
+  plugins), which agy can write, so until the app has its own guard a misled agy could
+  plant a command the app later runs unguarded. The app's own agent is unguarded
+  too. Guarding the app is the next step.
+- **agy's login file** is readable by unguarded programs, as wallet entries are once the
+  wallet is open.
 - **Wayland clipboard:** a focused window can read the clipboard.
 - **Other processes' command lines are visible** (`/proc/*/cmdline`; environments,
   memory and signals are not). Keep secrets out of command-line arguments. A private

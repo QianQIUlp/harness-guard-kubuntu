@@ -1,0 +1,23 @@
+# Guard for the Antigravity CLI. harness-guard switches into it before starting agy
+# (see agents/agy.toml); it also attaches to the real binary, so running that directly
+# is still confined.
+abi <abi/5.0>,
+include <tunables/global>
+
+profile agy-guard /home/qiu/.local/state/agy/guard-bin/agy flags=(attach_disconnected) {
+  include <abstractions/harness-guard>
+  include <abstractions/harness-guard-antigravity>
+  include if exists <harness-guard/agy>
+
+  owner /home/qiu/.cache/agy-guard/{,**} rwkmix,
+  owner /tmp/agy-1000/{,**} rwkmix,
+
+  # `agy update`. Inside the launcher's private view ~/.local/bin is
+  # ~/.local/state/agy/guard-bin; the host ~/.local/bin/agy is a root-owned, immutable
+  # forwarder, and the binary is attached to this profile wherever it is run from.
+  owner /home/qiu/.local/state/agy/{,**} rwk,
+  owner /home/qiu/.local/bin/ r,
+  owner /home/qiu/.local/bin/{agy,agy.*,.agy*} rw,
+  /home/qiu/.local/bin/agy rix,
+  mount options in (rw,bind,silent) /home/qiu/.local/state/agy/guard-bin/ -> /home/qiu/.local/bin/,
+}

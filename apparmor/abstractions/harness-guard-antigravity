@@ -1,0 +1,6 @@
+# Antigravity's own state, shared by its guards: settings, plugins, MCP servers,
+# conversations and agy's login file. Keyring access stays denied.
+
+  owner /home/qiu/.gemini/ r,
+  owner /home/qiu/.gemini/{config,antigravity-cli}/ rw,
+  owner /home/qiu/.gemini/{config,antigravity-cli}/** rwkmix,
