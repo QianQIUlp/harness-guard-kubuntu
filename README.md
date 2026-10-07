@@ -56,7 +56,7 @@ back to running unconfined.
 | `bin/harness-guard` | `/usr/local/libexec/harness-guard`: the launcher |
 | `bin/harness-guard-handoff`, `etc/systemd/harness-guard-handoff*` | `/usr/local/libexec/harness-guard-handoff`, started per request by the user socket unit in `/etc/systemd/user`: starts agy in its own guard for Claude |
 | `bin/harness-guard-apply` | `/usr/local/sbin/harness-guard-apply`: compiles the policy into `/etc/apparmor.d/harness-guard/` and reloads the profiles |
-| `console/harness-guard-console`, `console/main.qml` | `/usr/local/lib/harness-guard-console/`, started as `harness-guard-console` or "Harness Guard" in the menu: the console (below) |
+| `console/` (program, QML, `qmldir`) | `/usr/local/lib/harness-guard-console/`, started as `harness-guard-console` or "Harness Guard" in the menu: the console (below) |
 | `console/org.harness-guard.apply.policy` | `/usr/share/polkit-1/actions/`: lets the console run `harness-guard-apply` through `pkexec`, admin password every time |
 | `tools/check.sh` | also `/usr/local/libexec/harness-guard-check`, which the console runs |
 | `bin/xdg-open`, `bin/bwrap` | `/usr/local/libexec/harness-guard-bin/` (first in the guarded `PATH`) |
@@ -146,16 +146,24 @@ write into `~/.local/state/{claude,agy}/guard-bin`, which the launcher shows as
 `~/.local/bin`.
 Desktop package updates go to the diverted `.real` file and need no action.
 
-**Console:** `harness-guard-console` (PyQt6 + Kirigami) shows the agents (guarded,
-enforcing, running processes, version), the check as a live view (Integrity), this
-boot's AppArmor denials per agent (Activity), and edits the policy (Permissions).
-Applying shows the policy and compiled-rule diff first, then `pkexec` asks for your
-password and `harness-guard-apply --replace` installs exactly that text (keeping
-`policy.toml.bak`), refusing if `policy.toml` changed since the console read it. The
-console runs as you, unguarded, offers no D-Bus or socket API, and refuses to start
-unless it is the root-owned installed copy. Activity offers "Allow…" only as a draft
-entry for review, and never for `~/.*` paths, since an agent chooses what it gets
-denied. Activity needs your user to read the kernel journal (as `check.sh` does).
+**Console:** `harness-guard-console` (PyQt6 + Qt Quick) opens on an overview where
+each agent's state is a colour: red is open (not guarded or not enforcing), ink is
+running, paper is idle. Each agent has its own page: Start (CLI agents open in Konsole
+in a folder you pick) or Stop, its numbers, its reach (the policy paths, edited in
+place), what it was refused in the last 24 hours, and its log. Activity follows every
+denial live and keeps 30 days of counts; Integrity runs the check and keeps past runs.
+Edits collect into a draft across agents. Applying shows the policy and compiled-rule
+diff first, then `pkexec` asks for your password and `harness-guard-apply --replace`
+installs exactly that text (keeping `policy.toml.bak`), refusing if `policy.toml`
+changed since the console read it. Closing the window leaves it in the tray, where it
+notifies you when a guard opens, a check starts failing, or an agent is refused
+(Settings turns this off, or starts it at login). History and settings are in
+`~/.local/state/harness-guard-console`. Start always runs the launcher, never the
+agent's entry point, so it fails closed. The console runs as you, unguarded, offers
+no D-Bus or socket API, and refuses to start unless it is the root-owned installed
+copy. Activity offers "Allow…" only as a draft entry for review, and never for `~/.*`
+paths, since an agent chooses what it gets denied. Activity needs your user to read
+the kernel journal (as `check.sh` does).
 
 **Choosing paths per agent:** use the console, or edit the policy and apply it. Running agents get the new
 rules within a second, without a restart:

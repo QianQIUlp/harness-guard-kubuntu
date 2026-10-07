@@ -2,30 +2,41 @@
 """Harness Guard console: see and change what each guarded coding agent may do.
 
 Installed root-owned in /usr/local/lib/harness-guard-console and started as
-harness-guard-console (as qiu, unguarded). It reads state, runs the installed check,
-follows the kernel journal for denials, and edits a copy of
+harness-guard-console (as qiu, unguarded; --tray starts it hidden in the tray). It
+reads state, runs the installed check, follows the kernel journal for denials, starts
+and stops agents through the launcher, and edits a copy of
 /etc/harness-guard/policy.toml, which `harness-guard-apply --replace` installs through
-pkexec (your password every time). It offers no D-Bus or socket API, and refuses to
-run from a copy that isn't root-owned (such as this repository).
+pkexec (your password every time). History and settings live in
+~/.local/state/harness-guard-console, which no guard can write. It offers no D-Bus or
+socket API (a second start only signals the first with SIGUSR1 to show its window),
+and refuses to run from a copy that isn't root-owned (such as this repository).
 """
 import difflib
+import fcntl
 import hashlib
 import json
 import os
 import re
+import shutil
+import signal
+import socket
 import stat
 import subprocess
 import sys
+import time
 import tomllib
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
 for var in ('QML_IMPORT_PATH', 'QML2_IMPORT_PATH', 'QT_PLUGIN_PATH'):
     os.environ.pop(var, None)  # only the system's Qt and Kirigami modules
 
-from PyQt6.QtCore import QObject, QProcess, QTimer, QUrl, pyqtProperty, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QGuiApplication, QIcon
+from PyQt6.QtCore import (QObject, QProcess, QTimer, QUrl, Qt, pyqtProperty, pyqtSignal,
+                          pyqtSlot)
+from PyQt6.QtGui import QAction, QGuiApplication, QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
+from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 HOME = '/home/qiu'
 ETC = Path('/etc/harness-guard')
@@ -33,6 +44,12 @@ POLICY = ETC / 'policy.toml'
 COMPILED = Path('/etc/apparmor.d/harness-guard')
 APPLY = '/usr/local/sbin/harness-guard-apply'
 CHECK = '/usr/local/libexec/harness-guard-check'
+LAUNCHER = '/usr/local/libexec/harness-guard'
+STATE = Path(HOME, '.local/state/harness-guard-console')
+AUTOSTART = Path(HOME, '.config/autostart/harness-guard-console.desktop')
+PULSE = 90          # samples of running processes, one per 2 s
+KEEP_DAYS = 60      # history kept
+DEFAULTS = {'tray': True, 'notify': True, 'folders': {}}
 QML = Path(__file__).resolve().with_name('main.qml')
 ACCESS = ('none', 'r', 'rx', 'rw', 'rwx')
 HEADER = '# Your choices per agent; see harness-guard-apply. Written by harness-guard-console.\n'
@@ -122,6 +139,36 @@ def suggestion(fields):
     return access if access in ACCESS else ''
 
 
+def boot_id():
+    try:
+        return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    except OSError:
+        return 'unknown'
+
+
+def load_json(path, default):
+    try:
+        value = json.loads(path.read_text())
+        return value if isinstance(value, type(default)) else default
+    except (OSError, ValueError):
+        return default
+
+
+def save_json(path, value):
+    """Atomic write into the console's own state folder."""
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temp = path.with_suffix('.new')
+    temp.write_text(json.dumps(value, separators=(',', ':')))
+    temp.replace(path)
+
+
+def terminal(folder, command):
+    """Konsole (or the system's terminal) in FOLDER running COMMAND."""
+    if konsole := shutil.which('konsole'):
+        return konsole, ['--workdir', folder, '-e', *command]
+    return shutil.which('x-terminal-emulator') or '/usr/bin/xterm', ['-e', *command]
+
+
 class Guard(QObject):
     agentsChanged = pyqtSignal()
     runningChanged = pyqtSignal()
@@ -130,21 +177,49 @@ class Guard(QObject):
     draftChanged = pyqtSignal()
     reviewChanged = pyqtSignal()
     applyChanged = pyqtSignal()
+    pulseChanged = pyqtSignal()
+    historyChanged = pyqtSignal()
+    settingsChanged = pyqtSignal()
+    showRequested = pyqtSignal()
+    notify = pyqtSignal(str, str, bool)  # title, text, urgent
 
     def __init__(self):
         super().__init__()
         self._agents, self._running, self._versions = [], {}, {}
-        self._check, self._check_exit, self._check_buffer = [], -1, ''
+        self._check, self._check_exit, self._check_buffer, self._check_time = [], -1, '', ''
         self._denials, self._journal_error, self._journal_buffer = {}, '', ''
         self._review, self._review_ok, self._apply_output, self._apply_exit = [], False, '', -1
-        self._processes = []
+        self._processes, self._pulse, self._message = [], {}, ''
+        self._started = time.time()
+        self._boot = boot_id()
+        self._hours = {}      # this boot: epoch hour -> agent -> denials
+        self._fresh = {}      # agent -> denials seen live, waiting to be announced
+        self._announced = {}  # agent -> when it was last announced
+        self._settings = {**DEFAULTS, **load_json(STATE / 'settings.json', {})}
+        self._history = load_json(STATE / 'history.json', {})
+        for key, empty in (('hours', {}), ('checks', []), ('events', [])):
+            if not isinstance(self._history.get(key), type(empty)):
+                self._history[key] = empty
+        self._save = QTimer(self, interval=5000, singleShot=True, timeout=self.save_history)
+        self._announce = QTimer(self, interval=6000, singleShot=True, timeout=self.announce)
         self.reload_policy()
         self.refresh()
         self._timer = QTimer(self, interval=2000, timeout=self.update_running)
         self._timer.start()
+        self._watch = QTimer(self, interval=30000, timeout=self.update_state)
+        self._watch.start()
         self.follow_journal()
+        self.runCheck()
 
     # Agents
+
+    @pyqtProperty(str, constant=True)
+    def host(self):
+        return socket.gethostname()
+
+    @pyqtProperty(str, constant=True)
+    def user(self):
+        return os.environ.get('USER', 'qiu')
 
     @pyqtProperty('QVariantList', notify=agentsChanged)
     def agents(self):
@@ -156,18 +231,32 @@ class Guard(QObject):
 
     @pyqtSlot()
     def refresh(self):
-        specs = {p.stem: tomllib.loads(p.read_text()) for p in sorted((ETC / 'agents').glob('*.toml'))}
-        self._agents = [{
-            'id': agent, 'name': spec.get('name', agent), 'profile': spec['profile'],
-            'entry': spec.get('entry', ''),
-            'guarded': forwarder_ok(agent, expand(spec.get('entry', ''))),
-            'enforcing': enforcing(spec['profile']),
-        } for agent, spec in specs.items()]
-        self.agentsChanged.emit()
+        self._specs = {p.stem: tomllib.loads(p.read_text())
+                       for p in sorted((ETC / 'agents').glob('*.toml'))}
+        self.update_state()
         self.update_running()
-        for agent, spec in specs.items():
+        for agent, spec in self._specs.items():
             if command := [expand(arg) for arg in spec.get('version', ())]:
                 self.run(command, lambda out, code, agent=agent: self.set_version(agent, out))
+
+    def update_state(self):
+        """Whether each agent is still held; announced when that changes."""
+        before = {a['id']: a['guarded'] and a['enforcing'] for a in self._agents}
+        self._agents = [{
+            'id': agent, 'name': spec.get('name', agent), 'profile': spec['profile'],
+            'entry': spec.get('entry', ''), 'terminal': spec.get('terminal', False) is True,
+            'guarded': forwarder_ok(agent, expand(spec.get('entry', ''))),
+            'enforcing': enforcing(spec['profile']),
+        } for agent, spec in self._specs.items()]
+        for a in self._agents:
+            held = a['guarded'] and a['enforcing']
+            if a['id'] in before and before[a['id']] != held:
+                self.record('held' if held else 'open', a['id'],
+                           'held again' if held else 'no longer held')
+                if not held:
+                    self.notify.emit(f'{a["name"]} is no longer held',
+                                     'Its guard is open. Rerun the installer before using it.', True)
+        self.agentsChanged.emit()
 
     def set_version(self, agent, output):
         self._versions[agent] = version_of(output) or '?'
@@ -176,9 +265,73 @@ class Guard(QObject):
     def update_running(self):
         counts = running([a['profile'] for a in self._agents])
         result = {a['id']: counts[a['profile']] for a in self._agents}
+        for agent, n in result.items():
+            self._pulse.setdefault(agent, deque([0] * PULSE, maxlen=PULSE)).append(n)
+            was = self._running.get(agent)
+            if was is not None and bool(was) != bool(n):
+                self.record('run' if n else 'end', agent, 'started' if n else 'stopped')
+        self.pulseChanged.emit()
         if result != self._running:
             self._running = result
             self.runningChanged.emit()
+
+    @pyqtProperty('QVariantMap', notify=pulseChanged)
+    def pulse(self):
+        """Running processes per agent over the last three minutes, oldest first."""
+        return {agent: list(samples) for agent, samples in self._pulse.items()}
+
+    # Starting and stopping
+
+    @pyqtProperty(str, notify=runningChanged)
+    def message(self):
+        return self._message
+
+    def say(self, text):
+        self._message = text
+        self.runningChanged.emit()
+
+    @pyqtSlot(str, result=str)
+    def folderFor(self, agent):
+        return self._settings['folders'].get(agent, '~/src')
+
+    @pyqtSlot(str, str)
+    def launch(self, agent, folder):
+        """Start an agent through the launcher, which refuses unless its guard enforces.
+        Never through its entry point, which may no longer be the forwarder."""
+        spec = next((a for a in self._agents if a['id'] == agent), None)
+        if spec is None:
+            return
+        if spec['terminal']:
+            folder = folder.strip() or '~/src'
+            path = expand(folder)
+            if not os.path.isdir(path):
+                self.say(f'{folder} is not a folder.')
+                return
+            self._settings['folders'][agent] = folder
+            self.save_settings()
+            program, args = terminal(path, [LAUNCHER, agent])
+        else:
+            program, args, path = LAUNCHER, [agent], HOME
+        ok, _pid = QProcess.startDetached(program, args, path)
+        self.record('start', agent, f'started from the console in {folder}' if spec['terminal']
+                   else 'started from the console')
+        self.say('' if ok else f'Could not start {program}.')
+
+    @pyqtSlot(str)
+    def stop(self, agent):
+        """SIGTERM to every process in the agent's profile (they are qiu's own)."""
+        profile = next((a['profile'] for a in self._agents if a['id'] == agent), None)
+        stopped = 0
+        for attr in Path('/proc').glob('[0-9]*/attr/current'):
+            try:
+                if attr.read_text().split(' (')[0].split('//')[0] == profile:
+                    os.kill(int(attr.parent.parent.name), signal.SIGTERM)
+                    stopped += 1
+            except (OSError, ValueError):
+                continue
+        if stopped:
+            self.record('stop', agent, f'stopped from the console ({stopped} processes)')
+        self.say('' if stopped else 'Nothing to stop.')
 
     def run(self, command, done, stdin=None, on_output=None):
         """Start a program without a shell; done(output, exit code) when it ends."""
@@ -209,6 +362,14 @@ class Guard(QObject):
             process.closeWriteChannel()
         return process
 
+    def shutdown(self):
+        """Stop journalctl and other children quietly before the objects go away."""
+        for process in list(self._processes):
+            process.blockSignals(True)
+            process.kill()
+            process.waitForFinished(1000)
+        self._processes.clear()
+
     # Integrity
 
     @pyqtProperty('QVariantList', notify=checkChanged)
@@ -218,6 +379,22 @@ class Guard(QObject):
     @pyqtProperty(int, notify=checkChanged)
     def checkExit(self):
         return self._check_exit  # -2 running, -1 never run
+
+    @pyqtProperty('QVariantList', notify=checkChanged)
+    def checkSections(self):
+        """Check lines grouped under their headings."""
+        sections = []
+        for line in self._check:
+            if line['kind'] == 'head' or not sections:
+                sections.append({'title': line['text'].rstrip(':') if line['kind'] == 'head' else '',
+                                 'items': []})
+            if line['kind'] != 'head' and line['text']:
+                sections[-1]['items'].append(line)
+        return sections
+
+    @pyqtProperty(str, notify=checkChanged)
+    def checkTime(self):
+        return self._check_time
 
     @pyqtSlot()
     def runCheck(self):
@@ -241,8 +418,23 @@ class Guard(QObject):
             self.check_output('\n')
         if not self._check:
             self._check = [{'kind': 'fail', 'text': f'FAIL  {CHECK} did not run ({code})'}]
+        failed = sum(line['kind'] == 'fail' for line in self._check)
+        total = failed + sum(line['kind'] == 'ok' for line in self._check)
+        last = self._history['checks'][-1] if self._history['checks'] else None
+        if failed and (last is None or not last.get('failed')):
+            self.notify.emit(f'{failed} of {total} guard checks fail',
+                             'Open Harness Guard to see which.', True)
+        self._history['checks'] = (self._history['checks'] + [
+            {'t': int(time.time()), 'failed': failed, 'total': total}])[-60:]
+        self._save.start()
         self._check_exit = code
+        self._check_time = datetime.now().strftime('%H:%M')
         self.checkChanged.emit()
+        self.historyChanged.emit()
+
+    @pyqtProperty('QVariantList', notify=historyChanged)
+    def checkHistory(self):
+        return self._history['checks'][-30:]
 
     # Activity
 
@@ -255,7 +447,7 @@ class Guard(QObject):
         return self._journal_error
 
     def follow_journal(self):
-        self.run(['/usr/bin/journalctl', '-k', '-b', '-f', '-n', '2000', '-o', 'json',
+        self.run(['/usr/bin/journalctl', '-k', '-b', '-f', '-n', 'all', '-o', 'json',
                   '--no-pager', '-g', 'apparmor="DENIED"'],
                  self.journal_ended, on_output=self.journal_output)
 
@@ -291,18 +483,129 @@ class Guard(QObject):
             if when >= denial['last']:
                 denial.update(last=when, comm=fields.get('comm', ''),
                               time=datetime.fromtimestamp(when).strftime('%H:%M:%S'))
+            hour = self._hours.setdefault(str(when // 3600 * 3600), {})
+            hour[agent] = hour.get(agent, 0) + 1
+            if when >= self._started:
+                self._fresh.setdefault(agent, []).append(denial['name'])
+                if not self._announce.isActive():
+                    self._announce.start()
             changed = True
         if changed:
+            self._history['hours'][self._boot] = self._hours
+            self._save.start()
             self.denialsChanged.emit()
+            self.historyChanged.emit()
+
+    def announce(self):
+        """One notification per agent for what it was just refused, at most every 10 min."""
+        now = time.time()
+        names = {a['id']: a['name'] for a in self._agents}
+        for agent, refused in list(self._fresh.items()):
+            if now - self._announced.get(agent, 0) < 600:
+                continue
+            del self._fresh[agent]
+            self._announced[agent] = now
+            shown = sorted(set(refused), key=refused.index)[:3]
+            self.notify.emit(f'{names.get(agent, agent)} was refused '
+                             + ('once' if len(refused) == 1 else f'{len(refused)} times'),
+                             '\n'.join(n.replace(HOME, '~', 1) for n in shown), False)
+        if self._fresh:
+            self._announce.start()
 
     def journal_ended(self, output, code):
         self._journal_error = f'journalctl stopped ({code}). {self._journal_error}'.strip()
         self.denialsChanged.emit()
 
+    @pyqtProperty('QVariantMap', notify=denialsChanged)
+    def denialCounts(self):
+        counts = {}
+        for denial in self._denials.values():
+            counts[denial['agent']] = counts.get(denial['agent'], 0) + denial['count']
+        return counts
+
     @pyqtSlot()
     def clearDenials(self):
         self._denials = {}
         self.denialsChanged.emit()
+
+    # History
+
+    def record(self, kind, agent, text):
+        self._history['events'] = (self._history['events'] + [
+            {'t': int(time.time()), 'kind': kind, 'agent': agent, 'text': text}])[-500:]
+        self._save.start()
+        self.historyChanged.emit()
+
+    def save_history(self):
+        cutoff = time.time() - KEEP_DAYS * 86400
+        hours = self._history['hours']
+        for boot in list(hours):
+            hours[boot] = {h: n for h, n in hours[boot].items() if int(h) >= cutoff}
+            if not hours[boot] and boot != self._boot:
+                del hours[boot]
+        self._history['events'] = [e for e in self._history['events'] if e['t'] >= cutoff]
+        try:
+            save_json(STATE / 'history.json', self._history)
+        except OSError as error:
+            self._journal_error = f'History not saved: {error}'
+            self.denialsChanged.emit()
+
+    def totals(self, start, step, count):
+        """Denials per agent in COUNT buckets of STEP seconds from START, all boots."""
+        buckets = [{'t': start + i * step, 'total': 0, 'agents': {}} for i in range(count)]
+        for hours in self._history['hours'].values():
+            for hour, agents in hours.items():
+                i = (int(hour) - start) // step
+                if 0 <= i < count:
+                    for agent, n in agents.items():
+                        buckets[i]['total'] += n
+                        buckets[i]['agents'][agent] = buckets[i]['agents'].get(agent, 0) + n
+        return buckets
+
+    @pyqtProperty('QVariantList', notify=historyChanged)
+    def denialHours(self):
+        """The last 24 hours, oldest first."""
+        now = int(time.time()) // 3600 * 3600
+        return self.totals(now - 23 * 3600, 3600, 24)
+
+    @pyqtProperty('QVariantList', notify=historyChanged)
+    def denialDays(self):
+        """The last 30 days (local midnight to midnight), oldest first."""
+        midnight = int(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        return self.totals(midnight - 29 * 86400, 86400, 30)
+
+    @pyqtProperty('QVariantList', notify=historyChanged)
+    def events(self):
+        return [{**e, 'when': datetime.fromtimestamp(e['t']).strftime('%d %b %H:%M')}
+                for e in reversed(self._history['events'][-200:])]
+
+    # Settings
+
+    @pyqtProperty('QVariantMap', notify=settingsChanged)
+    def settings(self):
+        return {**self._settings, 'autostart': AUTOSTART.exists()}
+
+    def save_settings(self):
+        try:
+            save_json(STATE / 'settings.json', self._settings)
+        except OSError:
+            pass
+        self.settingsChanged.emit()
+
+    @pyqtSlot(str, bool)
+    def setSetting(self, key, on):
+        if key == 'autostart':
+            # Your own autostart entry, written by you (agents can't write ~/.config/autostart).
+            if on:
+                AUTOSTART.parent.mkdir(parents=True, exist_ok=True)
+                AUTOSTART.write_text('[Desktop Entry]\nType=Application\nName=Harness Guard\n'
+                                     'Exec=/usr/local/bin/harness-guard-console --tray\n'
+                                     'Icon=security-high\nNoDisplay=true\n')
+            else:
+                AUTOSTART.unlink(missing_ok=True)
+        elif key in ('tray', 'notify'):
+            self._settings[key] = on
+        self.save_settings()
 
     # Permissions
 
@@ -318,6 +621,29 @@ class Guard(QObject):
     @pyqtProperty('QVariantMap', notify=draftChanged)
     def draft(self):
         return self._draft
+
+    @pyqtProperty('QVariantMap', notify=draftChanged)
+    def changes(self):
+        """Per agent: paths added or changed, paths removed, token switched."""
+        out = {}
+        for agent in sorted(set(self._draft) | set(self._policy)):
+            old, new = self._policy.get(agent, {}), self._draft.get(agent, {})
+            before = {e['path']: e['access'] for e in old.get('paths', [])}
+            after = {e['path']: e['access'] for e in new.get('paths', [])}
+            change = {'changed': [p for p in after if before.get(p) != after[p]],
+                      'removed': [p for p in before if p not in after],
+                      'token': old.get('github_token') != new.get('github_token')}
+            if change['changed'] or change['removed'] or change['token']:
+                out[agent] = change
+        return out
+
+    @pyqtProperty(int, notify=draftChanged)
+    def changeCount(self):
+        return sum(len(c['changed']) + len(c['removed']) + c['token'] for c in self.changes.values())
+
+    @pyqtProperty(str, notify=draftChanged)
+    def policyId(self):
+        return self._policy_hash[:7]
 
     @pyqtProperty(bool, notify=draftChanged)
     def dirty(self):
@@ -431,29 +757,116 @@ class Guard(QObject):
         self._apply_output = messages.get(code, output.strip())
         self._apply_exit = code
         if code == 0:
+            before = self.policyId
             self.reload_policy()
+            self.record('apply', '', f'policy {before} → {self.policyId}')
             self._review, self._review_ok = [], False
             self.reviewChanged.emit()
         self.applyChanged.emit()
 
 
+def single_instance():
+    """Hold a lock in the console's state folder; if another console holds it, ask that
+    one to show its window and return None."""
+    signal.signal(signal.SIGUSR1, signal.SIG_IGN)  # until main() can handle it
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock = open(STATE / 'console.lock', 'a+')
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.seek(0)
+        try:
+            pid = int(lock.read().strip())
+            if (os.stat(f'/proc/{pid}').st_uid == os.getuid()
+                    and b'harness-guard-console' in Path(f'/proc/{pid}/cmdline').read_bytes()):
+                os.kill(pid, signal.SIGUSR1)
+        except (OSError, ValueError):
+            pass
+        return None
+    lock.truncate(0)
+    lock.write(str(os.getpid()))
+    lock.flush()
+    return lock
+
+
+def tray_for(app, guard):
+    """Tray icon: open the window, start an agent, quit. Shield turns red when one is open."""
+    tray = QSystemTrayIcon(QIcon.fromTheme('security-high'), app)
+    menu = QMenu()
+    show = QAction('Open Harness Guard', menu)
+    show.triggered.connect(guard.showRequested)
+    menu.addAction(show)
+    menu.addSeparator()
+    starts = []
+
+    def update():
+        held = [a for a in guard.agents if a['guarded'] and a['enforcing']]
+        open_ = len(guard.agents) - len(held)
+        tray.setIcon(QIcon.fromTheme('security-low' if open_ else 'security-high'))
+        live = sum(1 for n in guard.running.values() if n)
+        tray.setToolTip('Harness Guard: ' + (f'{open_} not held' if open_ else 'all held')
+                        + (f', {live} running' if live else ''))
+        for action in starts:
+            menu.removeAction(action)
+        starts.clear()
+        for a in held:
+            action = QAction(f'Start {a["name"]}', menu)
+            action.triggered.connect(lambda _=False, a=a: guard.launch(a['id'], guard.folderFor(a['id'])))
+            menu.insertAction(quit_, action)
+            starts.append(action)
+
+    menu.addSeparator()
+    quit_ = QAction('Quit', menu)
+    quit_.triggered.connect(app.quit)
+    menu.addAction(quit_)
+    tray.setContextMenu(menu)
+    tray.activated.connect(lambda reason: reason == QSystemTrayIcon.ActivationReason.Trigger
+                           and guard.showRequested.emit())
+    tray.messageClicked.connect(guard.showRequested)
+    guard.agentsChanged.connect(update)
+    guard.runningChanged.connect(update)
+    update()
+
+    def notify(title, text, urgent):
+        if guard.settings['notify'] and app.applicationState() != Qt.ApplicationState.ApplicationActive:
+            tray.showMessage(title, text, QSystemTrayIcon.MessageIcon.Warning if urgent
+                             else QSystemTrayIcon.MessageIcon.Information, 10000)
+    guard.notify.connect(notify)
+    return tray
+
+
 def main():
-    files = (Path(__file__).resolve(), QML)
+    files = [QML.parent, *QML.parent.iterdir()]  # this program, its QML and qmldir
     if any(p.stat().st_uid != 0 or p.stat().st_mode & 0o022 for p in files):
         sys.exit('harness-guard-console: run the installed console (sudo ./install.sh), '
                  'not a copy agents can write')
-    app = QGuiApplication(sys.argv)
+    lock = single_instance()
+    if lock is None:
+        return
+    app = QApplication(sys.argv)
     app.setApplicationName('harness-guard-console')
     app.setApplicationDisplayName('Harness Guard')
     app.setDesktopFileName('harness-guard-console')
     app.setWindowIcon(QIcon.fromTheme('security-high'))
     engine = QQmlApplicationEngine()
     guard = Guard()
+    app.aboutToQuit.connect(guard.shutdown)
+    app.aboutToQuit.connect(guard.save_history)
+    tray = tray_for(app, guard) if QSystemTrayIcon.isSystemTrayAvailable() else None
+    app.setQuitOnLastWindowClosed(tray is None)
+    # A second start sends SIGUSR1; the timer lets Python run the handler.
+    signal.signal(signal.SIGUSR1, lambda *_: QTimer.singleShot(0, guard.showRequested.emit))
+    wake = QTimer(interval=300, timeout=lambda: None)
+    wake.start()
     engine.rootContext().setContextProperty('guard', guard)
+    engine.rootContext().setContextProperty('hasTray', tray is not None)
+    engine.rootContext().setContextProperty('startHidden', tray is not None and '--tray' in sys.argv)
     engine.load(QUrl.fromLocalFile(str(QML)))
     if not engine.rootObjects():
         sys.exit('harness-guard-console: the interface failed to load')
-    sys.exit(app.exec())
+    code = app.exec()
+    del engine  # the window goes before the backend it binds to
+    sys.exit(code)
 
 
 if __name__ == '__main__':

@@ -6,6 +6,8 @@ entry = "~/.local/bin/claude"
 # The console shows the first version number this prints (run as qiu).
 version = ["/usr/bin/readlink", "~/.local/state/claude/guard-bin/claude"]
 profile = "claude-code-guard"
+# The console starts it in a terminal, in a folder you pick.
+terminal = true
 exec = "~/.local/bin/claude"  # inside the private view below
 argv0 = "claude"
 cache = "~/.cache/claude-guard"

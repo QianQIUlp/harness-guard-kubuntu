@@ -6,6 +6,8 @@ entry = "~/.local/bin/agy"
 # The console shows the first version number this prints (run as qiu).
 version = ["~/.local/bin/agy", "--version"]
 profile = "agy-guard"
+# The console starts it in a terminal, in a folder you pick.
+terminal = true
 exec = "~/.local/bin/agy"  # inside the private view below
 argv0 = "agy"
 cache = "~/.cache/agy-guard"

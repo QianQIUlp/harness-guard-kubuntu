@@ -60,7 +60,8 @@ install)
     install -m 755 bin/harness-guard-apply /usr/local/sbin/harness-guard-apply
     # The console runs unguarded, so it is installed root-owned and never run from here.
     install -m 755 -D -t "$CONSOLE" console/harness-guard-console
-    install -m 644 console/main.qml "$CONSOLE/"
+    rm -f "$CONSOLE"/*.qml "$CONSOLE/qmldir"
+    install -m 644 console/*.qml console/qmldir "$CONSOLE/"
     ln -sfn "$CONSOLE/harness-guard-console" /usr/local/bin/harness-guard-console
     install -m 755 tools/check.sh "$LIBEXEC/harness-guard-check"
     install -m 644 console/org.harness-guard.apply.policy /usr/share/polkit-1/actions/

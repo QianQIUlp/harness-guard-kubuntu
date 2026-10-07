@@ -152,3 +152,76 @@ The other agents in the table stay unguarded until later.
    edits a copy and applies it with `pkexec harness-guard-apply --replace SHA256`, the
    reviewed text on stdin. The agent table's switch to guard a new agent, and a tree
    view of paths, wait until more agents are in scope; paths are a flat list.
+5. Done: the console's own look and an agent-centred layout (below).
+6. Done: state as colour, starting and stopping agents, history, tray and
+   notifications (below).
+7. Next: one application that installs, updates and removes everything (below).
+
+## Look
+
+The visual floor is me.qiu.works: warm paper, ink and one red, hairlines, large type,
+small letter-spaced mono captions, IBM Plex Sans/Serif/Mono. Light/dark follows the
+system. The controls are drawn by the console (Qt Quick Basic), not Breeze.
+
+- An agent's state is a field of colour, so it reads before any word: **red** is open
+  (not guarded or not enforcing: needs you), **ink** is running (held, active, with
+  its last three minutes of processes along the floor), **paper** is idle (held, at
+  rest). The overview cards and the agent page's hero use the same fills; the rail and
+  logs use the same three as small squares (round dots are checks). An open agent's
+  name is a hairline outline.
+- The hero carries the one action that matters in that state: Start (idle), New
+  session and Stop (running CLI), Stop (running app), "what the check says" (open).
+- Numbers that matter are set large (places it reaches, it can write, refused in 24
+  hours, GitHub token) and turn red while edited.
+- Red stays reserved for "needs you": open guards, failed checks, refusals worth
+  allowing, unapplied edits.
+
+## Running agents from the console
+
+Start runs `/usr/local/libexec/harness-guard AGENT` directly, never the entry point
+(which may no longer be the forwarder), so it fails closed like any other start. CLI
+agents (`terminal = true` in their spec) open in Konsole in a folder you choose,
+remembered per agent. Stop sends SIGTERM to every process whose label is the agent's
+profile, after a second click.
+
+## History, tray and notifications
+
+`~/.local/state/harness-guard-console/` (no guard can write it) keeps 60 days of:
+refusals per agent per hour (recomputed for the current boot from the journal, so a
+restart never double-counts), check runs (pass/fail counts), and a log of starts,
+stops, guards opening or closing, and applied policies. Closing the window leaves the
+console in the tray, where it keeps following the journal and re-probes every agent's
+guard every 30 s. It notifies when a guard opens, when the check starts failing, and
+what an agent was just refused (at most every 10 minutes per agent), unless its window
+has focus. "Start at login" writes the user's own autostart entry for `--tray`. A
+second start signals the first (SIGUSR1, after checking that PID is a console of this
+user) to show its window, so there is still no socket.
+
+## One application (plan)
+
+Today `install.sh` is the installer, run from this checkout, with paths for one user
+on one machine. The goal is an application you install once, from a release, and
+remove once, leaving the machine as it was:
+
+- **A Debian package** (`harness-guard_VERSION_all.deb`, built by a script in this
+  repository and attached to releases). Kubuntu installs it with a double click
+  (Discover) or `apt install ./harness-guard_*.deb`, and removes it the same way.
+  dpkg owns every system file, so removal can't leave strays. The package moves the
+  program out of `/usr/local` (`/usr/lib/harness-guard`, `/usr/libexec/harness-guard`,
+  `/usr/sbin/harness-guard-apply`, `/usr/bin/harness-guard-console`). Updates are
+  newer packages; the console can show when a newer release exists, but it never
+  installs anything without the same `pkexec` password.
+- **Guarding an agent is an action in the app, with a receipt.** What `install.sh`
+  does per agent today (forwarders, the Desktop diversion, moving `agy`, the
+  Antigravity menu entry, Cowork's device) becomes `harness-guard-setup guard AGENT`
+  and `release AGENT`, a root helper run through `pkexec`. Before changing anything it
+  records the original (file contents, owner, mode, diversion) in
+  `/var/lib/harness-guard/receipts/AGENT.json`; `release` puts exactly that back. The
+  package's `prerm` releases every agent, so uninstalling restores the machine.
+- **Per machine, not per `qiu`.** The user, home and UID come from
+  `/etc/harness-guard/owner.toml` (written at first run), and the profiles are
+  generated from them, like the policy rules are today.
+- **Detecting agents** (later): the agent specs ship in the package; the console
+  shows those whose vendor binaries exist, and "Guard it" runs the setup action.
+- The development path stays: `sudo ./install.sh` builds the package from this
+  checkout and installs it, so there is one way in and one way out.

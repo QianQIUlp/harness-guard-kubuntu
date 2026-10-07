@@ -1,391 +1,288 @@
 // Harness Guard console. Every string that may come from an agent (paths, process
-// names, check output) is shown with Text.PlainText so it can't inject markup or links.
+// names, check output) is shown as plain text so it can't inject markup or links.
 import QtQuick
-import QtQuick.Controls as QQC2
-import QtQuick.Dialogs
+import QtQuick.Controls.Basic as Q
 import QtQuick.Layouts
-import org.kde.kirigami as Kirigami
 
-Kirigami.ApplicationWindow {
-    id: root
+Q.ApplicationWindow {
+    id: window
 
     title: "Harness Guard"
-    width: Kirigami.Units.gridUnit * 64
-    height: Kirigami.Units.gridUnit * 42
+    width: 1240
+    height: 820
+    minimumWidth: 980
+    minimumHeight: 640
+    visible: !startHidden
+    color: Theme.paper
+    font.family: Theme.sans
 
-    readonly property var accessModes: [
-        { value: "none", text: "Deny" },
-        { value: "r", text: "Read" },
-        { value: "rx", text: "Read, run" },
-        { value: "rw", text: "Read, write" },
-        { value: "rwx", text: "Read, write, run" },
-    ]
-    property string permAgent: guard.agents.length ? guard.agents[0].id : ""
+    property string page: "overview"
+    property string agent: ""
+    property bool reviewing: false
 
-    function agentName(id) {
-        const agent = guard.agents.find(a => a.id === id)
-        return agent ? agent.name : id
+    function open(name, id) {
+        if (id !== undefined)
+            agent = id
+        page = name
     }
-    function show(page) {
-        pageStack.clear()
-        pageStack.push(page)
+    function agentById(id) {
+        return guard.agents.find(a => a.id === id)
     }
-
-    globalDrawer: Kirigami.GlobalDrawer {
-        modal: false
-        collapsible: true
-        actions: [
-            Kirigami.Action { text: "Agents"; icon.name: "system-users"; onTriggered: root.show(agentsPage) },
-            Kirigami.Action { text: "Permissions"; icon.name: "document-edit"; onTriggered: root.show(permissionsPage) },
-            Kirigami.Action { text: "Activity"; icon.name: "view-list-text"; onTriggered: root.show(activityPage) },
-            Kirigami.Action { text: "Integrity"; icon.name: "security-high"; onTriggered: root.show(integrityPage) }
-        ]
+    function held(a) {
+        return !!a && a.guarded && a.enforcing
     }
 
-    pageStack.initialPage: agentsPage
-    pageStack.defaultColumnWidth: Kirigami.Units.gridUnit * 34
-
-    component Status: RowLayout {
-        property bool good
-        property string text
-        spacing: Kirigami.Units.smallSpacing
-        Kirigami.Icon {
-            source: parent.good ? "emblem-ok-symbolic" : "emblem-error"
-            implicitWidth: Kirigami.Units.iconSizes.small
-            implicitHeight: implicitWidth
+    // Closing keeps watching from the tray (if there is one and it's wanted).
+    onClosing: close => {
+        if (hasTray && guard.settings.tray) {
+            close.accepted = false
+            window.hide()
         }
-        QQC2.Label { text: parent.text }
+    }
+    Connections {
+        target: guard
+        function onShowRequested() { window.show(); window.raise(); window.requestActivate() }
     }
 
-    Component {
-        id: agentsPage
-        Kirigami.ScrollablePage {
-            title: "Agents"
-            actions: [Kirigami.Action { text: "Refresh"; icon.name: "view-refresh"; onTriggered: guard.refresh() }]
+    component NavItem: Q.AbstractButton {
+        id: item
+        property bool current: false
+        property string meta: ""
+        property bool good: true
+        property bool live: false
+        property bool dot: false
+        property string mark: ""
+        width: parent ? parent.width : 0
+        height: 34
+        hoverEnabled: true
+        focusPolicy: Qt.StrongFocus
+        background: Rectangle {
+            color: item.current ? Theme.faint : item.hovered ? Qt.alpha(Theme.ink, 0.04) : "transparent"
+            radius: 4
+            Rectangle {
+                width: 2
+                height: 14
+                radius: 1
+                anchors.verticalCenter: parent.verticalCenter
+                color: Theme.red
+                visible: item.current
+            }
+            border.color: item.visualFocus ? Theme.red : "transparent"
+        }
+        contentItem: RowLayout {
+            spacing: 10
+            Item {
+                Layout.leftMargin: 14
+                implicitWidth: 9
+                implicitHeight: 9
+                visible: item.dot || item.mark !== ""
+                Dot { anchors.fill: parent; visible: item.mark === ""; good: item.good; live: item.live; hollow: !item.good }
+                StateMark { anchors.fill: parent; visible: item.mark !== ""; state: item.mark || "idle" }
+            }
+            Text {
+                Layout.leftMargin: item.dot || item.mark !== "" ? 0 : 14
+                Layout.fillWidth: true
+                text: item.text
+                color: Theme.ink
+                font.family: Theme.sans
+                font.pixelSize: 13
+                font.weight: item.current ? Font.DemiBold : Font.Normal
+                elide: Text.ElideRight
+                textFormat: Text.PlainText
+            }
+            Text {
+                Layout.rightMargin: 12
+                text: item.meta
+                color: item.good ? Theme.muted : Theme.red
+                font.family: Theme.mono
+                font.pixelSize: 11
+                textFormat: Text.PlainText
+            }
+        }
+    }
 
-            ListView {
+    // Rail: wordmark, places, and a small map of the four guards.
+    Item {
+        id: rail
+        width: 236
+        anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+
+        Column {
+            id: brand
+            x: 26
+            y: 28
+            spacing: 6
+            Row {
+                spacing: 10
+                Text {
+                    text: "Guard"
+                    color: Theme.ink
+                    font.family: Theme.sans
+                    font.pixelSize: 28
+                    font.weight: Font.Bold
+                    font.letterSpacing: -1
+                }
+                Text {
+                    text: "+"
+                    color: Theme.red
+                    font.family: Theme.sans
+                    font.pixelSize: 28
+                    font.weight: Font.Light
+                }
+            }
+            Caption { text: "Harness guard · " + guard.host }
+        }
+
+        Column {
+            anchors { left: parent.left; right: parent.right; top: brand.bottom; margins: 12; topMargin: 36 }
+            spacing: 2
+
+            NavItem {
+                text: "Overview"
+                current: window.page === "overview"
+                onClicked: window.open("overview")
+            }
+            Item { width: 1; height: 18 }
+            Caption { x: 14; text: "Agents"; bottomPadding: 6 }
+            Repeater {
                 model: guard.agents
-                delegate: QQC2.ItemDelegate {
+                NavItem {
                     required property var modelData
-                    width: ListView.view.width
-                    onClicked: { root.permAgent = modelData.id; root.show(permissionsPage) }
-                    contentItem: RowLayout {
-                        spacing: Kirigami.Units.largeSpacing
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            Kirigami.Heading { level: 3; text: modelData.name; textFormat: Text.PlainText }
-                            QQC2.Label {
-                                Layout.fillWidth: true
-                                text: modelData.profile + " · " + modelData.entry
-                                textFormat: Text.PlainText
-                                elide: Text.ElideMiddle
-                                opacity: 0.7
-                            }
-                        }
-                        Status { good: modelData.guarded; text: good ? "Guarded" : "Not guarded" }
-                        Status { good: modelData.enforcing; text: good ? "Enforcing" : "Not enforcing" }
-                        QQC2.Label {
-                            Layout.minimumWidth: Kirigami.Units.gridUnit * 5
-                            text: (guard.running[modelData.id] || 0) + " processes"
-                        }
-                        QQC2.Label {
-                            Layout.minimumWidth: Kirigami.Units.gridUnit * 5
-                            text: modelData.version || "…"
-                            textFormat: Text.PlainText
-                        }
-                    }
+                    text: modelData.name
+                    mark: Theme.stateOf(modelData, guard.running[modelData.id] || 0)
+                    good: !guard.changes[modelData.id]
+                    meta: guard.changes[modelData.id] ? "edited" : (guard.running[modelData.id] || "")
+                    current: window.page === "agent" && window.agent === modelData.id
+                    onClicked: window.open("agent", modelData.id)
                 }
             }
-        }
-    }
-
-    Component {
-        id: integrityPage
-        Kirigami.ScrollablePage {
-            title: "Integrity"
-            actions: [Kirigami.Action {
-                text: guard.checkExit === -2 ? "Checking…" : "Run check"
-                icon.name: "view-refresh"
-                enabled: guard.checkExit !== -2
-                onTriggered: guard.runCheck()
-            }]
-            Component.onCompleted: if (guard.checkExit === -1) guard.runCheck()
-            header: Kirigami.InlineMessage {
-                position: Kirigami.InlineMessage.Position.Header
-                visible: guard.checkExit >= 0
-                type: guard.checkExit === 0 ? Kirigami.MessageType.Positive : Kirigami.MessageType.Error
-                text: guard.checkExit === 0 ? "Every check passed." : "Some checks failed; see FAIL below."
+            Item { width: 1; height: 18 }
+            Caption { x: 14; text: "Machine"; bottomPadding: 6 }
+            NavItem {
+                text: "Activity"
+                meta: guard.denials.length ? String(guard.denials.reduce((n, d) => n + d.count, 0)) : ""
+                current: window.page === "activity"
+                onClicked: window.open("activity")
             }
+            NavItem {
+                text: "Integrity"
+                dot: true
+                good: guard.checkExit === 0 || guard.checkExit < 0
+                live: guard.checkExit === -2
+                meta: guard.checkExit === -2 ? "…" : guard.checkTime
+                current: window.page === "integrity"
+                onClicked: window.open("integrity")
+            }
+            NavItem {
+                text: "Settings"
+                current: window.page === "settings"
+                onClicked: window.open("settings")
+            }
+        }
 
-            ListView {
-                model: guard.checkLines
-                delegate: RowLayout {
-                    required property var modelData
-                    width: ListView.view.width
-                    spacing: Kirigami.Units.smallSpacing
+        // Map: one point per agent, like the site's room map. Red marks one not held.
+        Column {
+            anchors { left: parent.left; bottom: parent.bottom; leftMargin: 26; bottomMargin: 26 }
+            spacing: 12
+            Grid {
+                columns: 2
+                spacing: 22
+                Repeater {
+                    model: guard.agents
                     Item {
-                        implicitWidth: Kirigami.Units.iconSizes.small
-                        implicitHeight: implicitWidth
-                        Kirigami.Icon {
+                        required property var modelData
+                        width: 10
+                        height: 10
+                        StateMark {
+                            anchors.centerIn: parent
+                            width: window.page === "agent" && window.agent === parent.modelData.id ? 12 : 8
+                            height: width
+                            state: Theme.stateOf(parent.modelData, guard.running[parent.modelData.id] || 0)
+                            Behavior on width { NumberAnimation { duration: Theme.quick } }
+                        }
+                        MouseArea {
                             anchors.fill: parent
-                            visible: modelData.kind === "ok" || modelData.kind === "fail"
-                            source: modelData.kind === "ok" ? "emblem-ok-symbolic" : "emblem-error"
+                            anchors.margins: -8
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: window.open("agent", parent.modelData.id)
                         }
                     }
-                    QQC2.Label {
-                        Layout.fillWidth: true
-                        Layout.topMargin: modelData.kind === "head" ? Kirigami.Units.largeSpacing : 0
-                        text: modelData.text.replace(/^(ok|FAIL) +/, "")
-                        textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
-                        font.bold: modelData.kind === "head"
-                        font.family: modelData.kind === "info" ? "monospace" : Kirigami.Theme.defaultFont.family
-                        color: modelData.kind === "fail" ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.textColor
-                    }
                 }
+            }
+            Caption { text: "Policy " + guard.policyId }
+        }
+    }
+    Rule { width: 1; anchors { left: rail.right; top: parent.top; bottom: parent.bottom } }
+
+    // Pages fade and settle in; the change bar sits under them while a draft exists.
+    Item {
+        id: stage
+        anchors { left: rail.right; leftMargin: 1; right: parent.right; top: parent.top; bottom: changeBar.top }
+        clip: true
+
+        Loader {
+            id: pageLoader
+            anchors.fill: parent
+            sourceComponent: ({ overview: overviewPage, agent: agentPage, activity: activityPage,
+                                integrity: integrityPage, settings: settingsPage })[window.page]
+            onLoaded: { item.opacity = 0; settle.restart() }
+            ParallelAnimation {
+                id: settle
+                NumberAnimation { target: pageLoader.item; property: "opacity"; from: 0; to: 1; duration: Theme.calm; easing.type: Easing.OutCubic }
+                NumberAnimation { target: pageLoader.item; property: "y"; from: 10; to: 0; duration: Theme.calm; easing.type: Easing.OutCubic }
+            }
+        }
+        Component { id: overviewPage; OverviewPage { nav: window } }
+        Component { id: agentPage; AgentPage { nav: window; agentId: window.agent } }
+        Component { id: activityPage; ActivityPage { nav: window } }
+        Component { id: integrityPage; IntegrityPage { nav: window } }
+        Component { id: settingsPage; SettingsPage { nav: window } }
+    }
+
+    Item {
+        id: changeBar
+        anchors { left: rail.right; leftMargin: 1; right: parent.right; bottom: parent.bottom }
+        height: guard.dirty ? 84 : 0
+        clip: true
+        Behavior on height { NumberAnimation { duration: Theme.calm; easing.type: Easing.OutCubic } }
+
+        Rule { width: parent.width }
+        RowLayout {
+            anchors { fill: parent; leftMargin: Theme.gutter; rightMargin: Theme.gutter }
+            spacing: 28
+            Dot { good: false }
+            Column {
+                Layout.fillWidth: true
+                spacing: 4
+                Text {
+                    text: guard.changeCount === 1 ? "One change, not applied yet." : guard.changeCount + " changes, not applied yet."
+                    color: Theme.ink
+                    font.family: Theme.sans
+                    font.pixelSize: 15
+                }
+                Caption {
+                    text: Object.keys(guard.changes).map(id => (window.agentById(id) || { name: id }).name).join(" · ")
+                }
+            }
+            TextAction { text: "Discard"; quiet: true; onClicked: guard.discard() }
+            RoundAction {
+                text: "Review"
+                note: "See the rules before they load"
+                onClicked: { guard.makeReview(); window.reviewing = true }
             }
         }
     }
 
-    Component {
-        id: activityPage
-        Kirigami.ScrollablePage {
-            id: activity
-            title: "Activity"
-            property string filter: ""
-            actions: [Kirigami.Action { text: "Clear"; icon.name: "edit-clear-history"; onTriggered: guard.clearDenials() }]
-            header: ColumnLayout {
-                spacing: 0
-                Kirigami.InlineMessage {
-                    Layout.fillWidth: true
-                    position: Kirigami.InlineMessage.Position.Header
-                    visible: guard.journalError !== ""
-                    type: Kirigami.MessageType.Warning
-                    text: "Can't follow the kernel journal: " + guard.journalError
-                }
-                QQC2.ToolBar {
-                    Layout.fillWidth: true
-                    RowLayout {
-                        QQC2.Label { text: "AppArmor denials this boot, newest first, for" }
-                        QQC2.ComboBox {
-                            model: [{ id: "", name: "all agents" }].concat(guard.agents)
-                            textRole: "name"
-                            valueRole: "id"
-                            onActivated: activity.filter = currentValue
-                        }
-                    }
-                }
-            }
-
-            ListView {
-                model: guard.denials.filter(d => activity.filter === "" || d.agent === activity.filter)
-                delegate: QQC2.ItemDelegate {
-                    required property var modelData
-                    width: ListView.view.width
-                    hoverEnabled: false
-                    contentItem: RowLayout {
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            QQC2.Label {
-                                Layout.fillWidth: true
-                                text: modelData.name || modelData.operation
-                                textFormat: Text.PlainText
-                                font.family: "monospace"
-                                elide: Text.ElideMiddle
-                            }
-                            QQC2.Label {
-                                Layout.fillWidth: true
-                                text: root.agentName(modelData.agent) + " · " + modelData.operation + " "
-                                      + modelData.mask + " · " + modelData.comm + " · " + modelData.count
-                                      + "× · last " + modelData.time
-                                textFormat: Text.PlainText
-                                elide: Text.ElideRight
-                                opacity: 0.7
-                            }
-                        }
-                        QQC2.Button {
-                            visible: modelData.access !== ""
-                            text: "Allow…"
-                            icon.name: "list-add"
-                            QQC2.ToolTip.text: "Add " + modelData.name + " (" + modelData.access
-                                               + ") to the draft policy for review"
-                            QQC2.ToolTip.visible: hovered
-                            onClicked: {
-                                guard.addPath(modelData.agent, modelData.name, modelData.access)
-                                root.permAgent = modelData.agent
-                                root.show(permissionsPage)
-                            }
-                        }
-                    }
-                }
-                Kirigami.PlaceholderMessage {
-                    anchors.centerIn: parent
-                    width: parent.width - Kirigami.Units.gridUnit * 4
-                    visible: parent.count === 0
-                    text: "No denials"
-                }
-            }
-        }
+    ReviewSheet {
+        anchors.fill: parent
+        open: window.reviewing
+        onClosed: window.reviewing = false
     }
 
-    Component {
-        id: permissionsPage
-        Kirigami.ScrollablePage {
-            id: permissions
-            title: "Permissions"
-            readonly property var section: guard.draft[root.permAgent] || { paths: [] }
-            actions: [
-                Kirigami.Action {
-                    text: "Review and apply…"
-                    icon.name: "dialog-ok-apply"
-                    enabled: guard.dirty
-                    onTriggered: { guard.makeReview(); pageStack.push(reviewPage) }
-                },
-                Kirigami.Action {
-                    text: "Discard changes"
-                    icon.name: "edit-undo"
-                    enabled: guard.dirty
-                    onTriggered: guard.discard()
-                }
-            ]
-            header: ColumnLayout {
-                spacing: 0
-                QQC2.TabBar {
-                    Layout.fillWidth: true
-                    currentIndex: guard.agents.findIndex(a => a.id === root.permAgent)
-                    Repeater {
-                        model: guard.agents
-                        QQC2.TabButton {
-                            required property var modelData
-                            text: modelData.name
-                            onClicked: root.permAgent = modelData.id
-                        }
-                    }
-                }
-                Kirigami.InlineMessage {
-                    Layout.fillWidth: true
-                    position: Kirigami.InlineMessage.Position.Header
-                    visible: guard.dirty
-                    text: "Unapplied changes. Path changes reach running agents within a second of applying; the GitHub token on their next start."
-                }
-            }
-
-            ListView {
-                id: pathList
-                model: permissions.section.paths
-                header: Kirigami.FormLayout {
-                    width: pathList.width
-                    QQC2.Switch {
-                        Kirigami.FormData.label: "GitHub token:"
-                        text: "Pass GH_TOKEN (on the agent's next start)"
-                        checked: permissions.section.github_token === true
-                        onToggled: guard.setGithubToken(root.permAgent, checked)
-                    }
-                    RowLayout {
-                        Kirigami.FormData.label: "Add path:"
-                        QQC2.TextField {
-                            id: newPath
-                            Layout.fillWidth: true
-                            placeholderText: "~/folder/ or ~/file"
-                            onAccepted: addButton.clicked()
-                        }
-                        QQC2.Button {
-                            text: "Browse…"
-                            icon.name: "folder-open"
-                            onClicked: folderDialog.open()
-                        }
-                        QQC2.ComboBox {
-                            id: newAccess
-                            model: root.accessModes
-                            textRole: "text"
-                            valueRole: "value"
-                            currentIndex: 1
-                        }
-                        QQC2.Button {
-                            id: addButton
-                            text: "Add"
-                            icon.name: "list-add"
-                            enabled: newPath.text.trim() !== ""
-                            onClicked: { guard.addPath(root.permAgent, newPath.text, newAccess.currentValue); newPath.clear() }
-                        }
-                    }
-                    FolderDialog {
-                        id: folderDialog
-                        onAccepted: newPath.text = guard.folderPath(selectedFolder)
-                    }
-                }
-                delegate: QQC2.ItemDelegate {
-                    required property var modelData
-                    required property int index
-                    width: ListView.view.width
-                    hoverEnabled: false
-                    contentItem: RowLayout {
-                        QQC2.Label {
-                            Layout.fillWidth: true
-                            text: modelData.path
-                            textFormat: Text.PlainText
-                            font.family: "monospace"
-                            elide: Text.ElideMiddle
-                        }
-                        QQC2.ComboBox {
-                            model: root.accessModes
-                            textRole: "text"
-                            valueRole: "value"
-                            currentIndex: root.accessModes.findIndex(m => m.value === modelData.access)
-                            onActivated: guard.setAccess(root.permAgent, index, currentValue)
-                        }
-                        QQC2.ToolButton {
-                            icon.name: "list-remove"
-                            QQC2.ToolTip.text: "Remove"
-                            QQC2.ToolTip.visible: hovered
-                            onClicked: guard.removePath(root.permAgent, index)
-                        }
-                    }
-                }
-                footer: QQC2.Label {
-                    width: pathList.width
-                    padding: Kirigami.Units.largeSpacing
-                    wrapMode: Text.Wrap
-                    opacity: 0.7
-                    text: "Deny wins over any allow. The agent's own state, keys, wallets and browser profiles are set by its profile, not here. Write access to places unguarded programs run or read config from is refused when you apply."
-                }
-            }
-        }
-    }
-
-    Component {
-        id: reviewPage
-        Kirigami.ScrollablePage {
-            title: "Review"
-            actions: [Kirigami.Action {
-                text: guard.applyExit === -2 ? "Applying…" : "Apply (asks for your password)"
-                icon.name: "dialog-password"
-                enabled: guard.reviewOk && guard.applyExit !== -2
-                onTriggered: guard.applyReview()
-            }]
-            header: Kirigami.InlineMessage {
-                position: Kirigami.InlineMessage.Position.Header
-                visible: guard.applyExit >= 0
-                type: guard.applyExit === 0 ? Kirigami.MessageType.Positive : Kirigami.MessageType.Error
-                text: guard.applyExit === 0 ? "Applied. " + guard.applyOutput : guard.applyOutput
-            }
-
-            ListView {
-                model: guard.review
-                delegate: QQC2.Label {
-                    required property var modelData
-                    width: ListView.view.width
-                    text: modelData.text
-                    textFormat: Text.PlainText
-                    wrapMode: Text.WrapAnywhere
-                    font.family: "monospace"
-                    font.bold: modelData.kind === "h"
-                    color: modelData.kind === "+" ? Kirigami.Theme.positiveTextColor
-                         : modelData.kind === "-" ? Kirigami.Theme.negativeTextColor
-                         : modelData.kind === "@" ? Kirigami.Theme.disabledTextColor
-                         : Kirigami.Theme.textColor
-                }
-            }
-        }
-    }
+    Shortcut { sequence: "Esc"; enabled: window.reviewing; onActivated: window.reviewing = false }
+    Shortcut { sequence: "Ctrl+1"; onActivated: window.open("overview") }
+    Shortcut { sequence: "Ctrl+2"; onActivated: window.open("activity") }
+    Shortcut { sequence: "Ctrl+3"; onActivated: window.open("integrity") }
+    Shortcut { sequences: [StandardKey.Quit]; onActivated: Qt.quit() }
+    Shortcut { sequences: [StandardKey.Refresh]; onActivated: { guard.refresh(); guard.runCheck() } }
 }
