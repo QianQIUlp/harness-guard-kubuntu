@@ -115,9 +115,12 @@ The other agents in the table stay unguarded until later.
 2. Done: spec format, compiler and generic launcher, Claude ported. The expanded
    profiles match the hand-written ones except the new names and an added deny for
    `~/.local/share/{kwalletd,keyrings}`.
-3. Antigravity app and `agy`. agy: done (`agy-guard`, file login, keyring denied),
-   installed and checked 2026-10-07. App: written (`antigravity-guard`), waiting for
-   install. From its code (2.19.1) and a runtime survey:
+3. Done: Antigravity app and `agy` (`agy-guard`, `antigravity-guard`, file logins,
+   keyring denied), installed and checked 2026-10-07, including sign-in and agy as
+   Claude's subagent. `bin/xdg-open` calls the portal directly: `gio open` starts the
+   default browser itself and uses the portal only if that start fails, which inside a
+   guard it never does (the browser is denied after GLib reports success). From the
+   app's code (2.19.1) and a runtime survey:
    - Electron in qiu-owned `/opt/antigravity`, started by `/usr/local/bin/antigravity`
      and `~/.local/share/applications/antigravity.desktop`. electron-updater picks the
      AppImage updater (no `resources/package-type`), which is inactive without
