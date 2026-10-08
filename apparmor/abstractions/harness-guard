@@ -33,20 +33,20 @@
   owner /dev/pts/[0-9]* rw,
 
   # Read-only shell setup and toolchains.
-  owner /home/qiu/.{bashrc,bash_profile,bash_login,profile,bash_aliases,npmrc} r,
-  owner /home/qiu/.grok/completions/bash/grok.bash r,
-  owner /home/qiu/.config/pnpm/{,auth.ini} r,
-  owner /home/qiu/.nvm/ r,
-  owner /home/qiu/.nvm/{nvm.sh,bash_completion} r,
-  owner /home/qiu/.nvm/nvm-exec rix,
-  owner /home/qiu/.nvm/alias/{,**} r,
-  owner /home/qiu/.nvm/versions/{,node/} r,
-  owner /home/qiu/.nvm/versions/node/v22.23.2/{,**} rmix,
-  owner /home/qiu/.cargo/ r,
-  owner /home/qiu/.cargo/{env,config,config.toml} r,
-  owner /home/qiu/.cargo/bin/{,**} rmix,
-  owner /home/qiu/.rustup/{,**} rmix,
-  owner /home/qiu/.rustup/settings.toml k,
+  owner @{HG_HOME}/.{bashrc,bash_profile,bash_login,profile,bash_aliases,npmrc} r,
+  owner @{HG_HOME}/.grok/completions/bash/grok.bash r,
+  owner @{HG_HOME}/.config/pnpm/{,auth.ini} r,
+  owner @{HG_HOME}/.nvm/ r,
+  owner @{HG_HOME}/.nvm/{nvm.sh,bash_completion} r,
+  owner @{HG_HOME}/.nvm/nvm-exec rix,
+  owner @{HG_HOME}/.nvm/alias/{,**} r,
+  owner @{HG_HOME}/.nvm/versions/{,node/} r,
+  owner @{HG_HOME}/.nvm/versions/node/v22.23.2/{,**} rmix,
+  owner @{HG_HOME}/.cargo/ r,
+  owner @{HG_HOME}/.cargo/{env,config,config.toml} r,
+  owner @{HG_HOME}/.cargo/bin/{,**} rmix,
+  owner @{HG_HOME}/.rustup/{,**} rmix,
+  owner @{HG_HOME}/.rustup/settings.toml k,
 
   # The launcher's private namespace: a fresh /dev/pts, so other terminals are invisible.
   # Agents that need a private view of a directory add their own bind mount rule.
@@ -56,7 +56,7 @@
   mount fstype=devpts options in (rw,nosuid,noexec,silent) devpts -> /dev/pts/,
 
   # Session bus: handshake plus opening URLs/files through the portal (bin/xdg-open).
-  owner /run/user/1000/bus rw,
+  owner /run/user/@{HG_UID}/bus rw,
   dbus send bus=session path=/org/freedesktop/DBus
        interface=org.freedesktop.DBus
        member={Hello,AddMatch,RemoveMatch,GetNameOwner,NameHasOwner,ListNames,StartServiceByName}
@@ -77,14 +77,14 @@
 
   # Explicit denials override every allow rule above and are logged.
   # (base grants legacy encrypted-home paths; the rest are already denied by default.)
-  audit deny /home/qiu/.Private{,/**} rwklmx,
+  audit deny @{HG_HOME}/.Private{,/**} rwklmx,
   audit deny /home/.ecryptfs/** rwklmx,
-  audit deny /home/qiu/.{ssh,gnupg,aws,azure,kube,docker,mozilla,password-store}/** rwklmx,
-  audit deny /home/qiu/.config/{git,gh,gcloud,kwalletd,windows-migration,google-chrome,chromium,BraveSoftware,clash*,Clash*,mihomo*,Mihomo*,clash-verge*}/** rwklmx,
-  audit deny /home/qiu/.{gitconfig,git-credentials,bash_history} rwklmx,
-  audit deny /home/qiu/.local/share/{kwalletd,keyrings}/** rwklmx,
+  audit deny @{HG_HOME}/.{ssh,gnupg,aws,azure,kube,docker,mozilla,password-store}/** rwklmx,
+  audit deny @{HG_HOME}/.config/{git,gh,gcloud,kwalletd,windows-migration,google-chrome,chromium,BraveSoftware,clash*,Clash*,mihomo*,Mihomo*,clash-verge*}/** rwklmx,
+  audit deny @{HG_HOME}/.{gitconfig,git-credentials,bash_history} rwklmx,
+  audit deny @{HG_HOME}/.local/share/{kwalletd,keyrings}/** rwklmx,
   # No login autostart: these would run outside the guard.
-  audit deny /home/qiu/.config/{autostart,systemd/user}/** wl,
+  audit deny @{HG_HOME}/.config/{autostart,systemd/user}/** wl,
   audit deny /run/{docker,containerd}.sock rw,
   audit deny /usr/bin/{sudo,su,pkexec,newgrp,sg} x,
   audit deny capability mac_admin,

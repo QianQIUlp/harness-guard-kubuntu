@@ -10,6 +10,30 @@ SHARE=/usr/share/harness-guard
 
 owner() { sed -n "s/^$1 = \"\{0,1\}\([^\"]*\)\"\{0,1\}\$/\1/p" "$ETC/owner.toml"; }
 
+# The owner is whoever ran the install with sudo; without sudo (apt run as root), the
+# first user with UID 1000. Nothing else is assumed, so the same package installs on
+# any machine. Kept on upgrade and removal; edit it only to correct a wrong detection.
+write_owner() {
+    user=${SUDO_USER:-}
+    [ -n "$user" ] && [ "$user" != root ] || user=$(getent passwd 1000 | cut -d: -f1)
+    entry=$(getent passwd "$user") || {
+        echo "harness-guard: cannot tell which user to guard; install with sudo as your own user" >&2
+        exit 1
+    }
+    tmp=$(mktemp "$ETC/.owner.XXXXXX")
+    {
+        echo '# The user whose agents are guarded, detected when the package was first installed.'
+        echo '# Read by the launcher, hand-off, policy compiler, setup helper and console.'
+        echo "user = \"$user\""
+        echo "uid = $(echo "$entry" | cut -d: -f3)"
+        echo "gid = $(echo "$entry" | cut -d: -f4)"
+        echo "home = \"$(echo "$entry" | cut -d: -f6)\""
+    } > "$tmp"
+    chmod 644 "$tmp"
+    mv "$tmp" "$ETC/owner.toml"
+    echo "harness-guard: guarding the agents of $user"
+}
+
 # The old install.sh layout (until 0.7): programs in /usr/local and forwarders that
 # point there. Put every agent back the way that layout's uninstall did, so the first
 # guard below records the original, not the old guard.
@@ -68,7 +92,7 @@ cleanup_legacy() {
 case "$1" in
 configure)
     install -d -m 755 "$ETC" /var/lib/harness-guard
-    [ -e "$ETC/owner.toml" ] || install -m 644 "$SHARE/owner.toml" "$ETC/owner.toml"
+    [ -e "$ETC/owner.toml" ] || write_owner
     [ -e "$ETC/policy.toml" ] || install -m 644 "$SHARE/policy.toml" "$ETC/policy.toml"
     # A newly added agent gets its default section; the owner's other choices stay.
     for spec in "$ETC"/agents/*.toml; do

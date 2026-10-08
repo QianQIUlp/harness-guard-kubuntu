@@ -220,12 +220,15 @@ release, and remove once, leaving the machine as it was:
   records the original (file contents, owner, mode, diversion) in
   `/var/lib/harness-guard/receipts/AGENT.json`; `release` puts exactly that back. The
   package's `prerm` releases every agent, so uninstalling restores the machine.
-- **Per machine, not per `qiu`.** The user, home and UID come from
-  `/etc/harness-guard/owner.toml`, which postinst writes once (still `qiu` for now) and
-  which the launcher, hand-off, compiler, setup helper and console read. Next: generate
-  the profiles from it, like the policy rules, instead of naming `/home/qiu`.
-- **Detecting agents** (later): the agent specs ship in the package; the console
-  shows those whose vendor binaries exist, and "Guard it" runs the setup action.
+- **Per machine, not per user.** The user, home and UID come from
+  `/etc/harness-guard/owner.toml`, which postinst detects once (the sudo user, else the
+  first UID 1000 user) and keeps on upgrade. `harness-guard-apply` writes them to
+  `/etc/apparmor.d/tunables/harness-guard` as `@{HG_USER}`, `@{HG_HOME}` and `@{HG_UID}`,
+  which every profile includes, so the profiles name no one. The launcher expands
+  `{uid}` in the agent specs. Only the four agents are supported.
+- **Detecting agents.** `harness-guard-setup status` reports which of the four are
+  installed (their vendor program is at its standard place). The console lists only
+  those, and Settings lets you guard or release each one.
 - The development path stays: `./install.sh` builds the package from this checkout
   as you (`fakeroot`) and `sudo apt install`s it, so there is one way in and one way
   out, and no root code runs from `~/src`.

@@ -8,6 +8,7 @@ case "$1" in
 remove|purge)
     home=$(sed -n 's/^home = "\(.*\)"$/\1/p' /etc/harness-guard/owner.toml 2>/dev/null || true)
     rm -rf /etc/apparmor.d/harness-guard /etc/harness-guard/gtk-schemas
+    rm -f /etc/apparmor.d/tunables/harness-guard
     # The console's "Start at login" entry would run a program that is gone.
     entry="$home/.config/autostart/harness-guard-console.desktop"
     if [ -n "$home" ] && [ -f "$entry" ] && grep -qx 'Exec=/usr/bin/harness-guard-console --tray' "$entry"; then

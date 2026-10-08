@@ -7,6 +7,7 @@
 # here, and only until it switches to a guard. Add each new agent guard below.
 abi <abi/5.0>,
 include <tunables/global>
+include <tunables/harness-guard>
 
 profile harness-guard-launcher /usr/libexec/harness-guard/launcher {
   include <abstractions/base>

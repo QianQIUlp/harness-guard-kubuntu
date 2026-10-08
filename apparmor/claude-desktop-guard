@@ -6,6 +6,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 abi <abi/5.0>,
 include <tunables/global>
+include <tunables/harness-guard>
 
 profile claude-desktop-guard /usr/lib/claude-desktop/claude-desktop.real flags=(attach_disconnected) {
   include <abstractions/harness-guard>
@@ -13,15 +14,15 @@ profile claude-desktop-guard /usr/lib/claude-desktop/claude-desktop.real flags=(
   include if exists <harness-guard/claude-desktop>
   include <abstractions/harness-guard-electron>
 
-  owner /home/qiu/.config/Claude/ rw,
-  owner /home/qiu/.config/Claude/** rwkmix,
-  owner /home/qiu/.cache/claude-guard/** l,
+  owner @{HG_HOME}/.config/Claude/ rw,
+  owner @{HG_HOME}/.config/Claude/** rwkmix,
+  owner @{HG_HOME}/.cache/claude-guard/** l,
   /usr/lib/claude-desktop/resources/smol-bin.*.img rk,
 
   # Cowork VM.
   /dev/{kvm,vhost-vsock} rw,
-  owner /run/user/1000/claude-cowork-vm.sock rw,
-  owner /run/user/1000/cowork-vm-*/{,**} rwk,
+  owner /run/user/@{HG_UID}/claude-cowork-vm.sock rw,
+  owner /run/user/@{HG_UID}/cowork-vm-*/{,**} rwk,
   /sys/module/{kvm_*,vhost}/parameters/* r,
   /sys/devices/system/node/{,node[0-9]*/meminfo} r,
   /proc/sys/vm/max_map_count r,

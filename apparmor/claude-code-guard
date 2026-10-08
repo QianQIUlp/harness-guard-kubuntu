@@ -1,8 +1,9 @@
 # AppArmor guard for Claude Code (native CLI). Installed as /etc/apparmor.d/claude-code-guard.
 abi <abi/5.0>,
 include <tunables/global>
+include <tunables/harness-guard>
 
-profile claude-code-guard /home/qiu/.local/share/claude/versions/* flags=(attach_disconnected) {
+profile claude-code-guard @{HG_HOME}/.local/share/claude/versions/* flags=(attach_disconnected) {
   include <abstractions/harness-guard>
   include <abstractions/harness-guard-claude>
   include if exists <harness-guard/claude-code>

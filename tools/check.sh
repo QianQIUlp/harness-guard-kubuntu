@@ -1,5 +1,5 @@
 #!/bin/sh
-# Smoke test for the agent guards. Run as qiu from a normal terminal, after installing
+# Smoke test for the agent guards. Run as the owner from a normal terminal, after installing
 # the package. Installed as /usr/libexec/harness-guard/check, which the console runs.
 probe='
     ok() { echo "  ok    $1"; }
@@ -28,13 +28,13 @@ probe='
         && bad "agy login readable" || ok "agy login denied"; }
     [ "$1" = antigravity-guard ] || { ls ~/.gemini/antigravity >/dev/null 2>&1 \
         && bad "Antigravity login readable" || ok "Antigravity login denied"; }
-    for sock in /run/docker.sock /run/user/1000/systemd/private /run/user/1000/gnupg/S.gpg-agent; do
+    for sock in /run/docker.sock /run/user/$(id -u)/systemd/private /run/user/$(id -u)/gnupg/S.gpg-agent; do
         python3 -c "import socket,sys; socket.socket(socket.AF_UNIX).connect(sys.argv[1])" "$sock" 2>/dev/null \
             && bad "$sock reachable" || ok "$sock denied"
     done
     case $1 in claude-*) ;; *)  # only Claude may start agy
         python3 -c "import socket,sys; socket.socket(socket.AF_UNIX).connect(sys.argv[1])" \
-            /run/user/1000/harness-guard-handoff.sock 2>/dev/null \
+            /run/user/$(id -u)/harness-guard-handoff.sock 2>/dev/null \
             && bad "agy hand-off reachable" || ok "agy hand-off denied";;
     esac
     exit $failed'
@@ -46,7 +46,7 @@ done
 # Unguarded programs that would run something Claude can write: browser native-messaging
 # hosts, desktop entries, autostart and user units pointing into a guarded writable area.
 echo "unguarded launchers:"
-writable="$HOME/src/|$HOME/.claude|$HOME/.config/Claude/|$HOME/.cache/claude-guard/|/tmp/claude-1000/|$HOME/.local/share/claude/|$HOME/.local/state/claude/|$HOME/.gemini/|$HOME/.cache/agy-guard/|/tmp/agy-1000/|$HOME/.local/state/agy/|$HOME/.config/Antigravity/|$HOME/.cache/antigravity-guard/|/tmp/antigravity-1000/"
+writable="$HOME/src/|$HOME/.claude|$HOME/.config/Claude/|$HOME/.cache/claude-guard/|/tmp/claude-$(id -u)/|$HOME/.local/share/claude/|$HOME/.local/state/claude/|$HOME/.gemini/|$HOME/.cache/agy-guard/|/tmp/agy-$(id -u)/|$HOME/.local/state/agy/|$HOME/.config/Antigravity/|$HOME/.cache/antigravity-guard/|/tmp/antigravity-$(id -u)/"
 hits=$(grep -lsE "(\"path\"|Exec|ExecStart)[\": =]+\"?($writable)" \
     ~/.config/google-chrome/NativeMessagingHosts/*.json ~/.config/chromium/NativeMessagingHosts/*.json \
     ~/.config/microsoft-edge/NativeMessagingHosts/*.json ~/.mozilla/native-messaging-hosts/*.json \
@@ -85,7 +85,7 @@ import json, os, socket
 request = json.dumps({'agent': 'agy', 'args': ['--version']}).encode()
 null = os.open('/dev/null', os.O_RDWR)
 with socket.socket(socket.AF_UNIX) as conn:
-    conn.connect('/run/user/1000/harness-guard-handoff.sock')
+    conn.connect(f'/run/user/{os.getuid()}/harness-guard-handoff.sock')
     socket.send_fds(conn, [len(request).to_bytes(4, 'big') + request],
                     [null, null, null, os.open('.', os.O_RDONLY | os.O_DIRECTORY)])
     raise SystemExit(conn.recv(4, socket.MSG_WAITALL) != (126).to_bytes(4, 'big', signed=True))
@@ -100,6 +100,10 @@ for spec in /etc/harness-guard/agents/*.toml; do
     [ -x "$exec" ] && echo "  ok    $(basename "$spec" .toml) runs $exec" \
         || { echo "  FAIL  $(basename "$spec" .toml): $exec is missing (guard it again in the console's Settings)"; status=1; }
 done
+[ "$(id -u)" = "$(sed -n 's/^uid = \([0-9]*\)$/\1/p' /etc/harness-guard/owner.toml)" ] \
+    && grep -qxF "@{HG_HOME}=$HOME" /etc/apparmor.d/tunables/harness-guard 2>/dev/null \
+    && echo "  ok    the profiles name you ($HOME, UID $(id -u))" \
+    || { echo "  FAIL  the profiles do not name you (reinstall, or check /etc/harness-guard/owner.toml)"; status=1; }
 echo "package:"
 [ "$(dpkg-query -Wf '${Status}' harness-guard 2>/dev/null)" = "install ok installed" ] \
     && echo "  ok    harness-guard $(dpkg-query -Wf '${Version}' harness-guard) is installed" \

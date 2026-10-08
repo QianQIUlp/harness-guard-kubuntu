@@ -40,7 +40,8 @@ from PyQt6.QtQml import QQmlApplicationEngine
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 ETC = Path('/etc/harness-guard')
-HOME = tomllib.loads((ETC / 'owner.toml').read_text())['home']
+OWNER = tomllib.loads((ETC / 'owner.toml').read_text())
+USER, HOME = OWNER['user'], OWNER['home']
 POLICY = ETC / 'policy.toml'
 COMPILED = Path('/etc/apparmor.d/harness-guard')
 APPLY = '/usr/sbin/harness-guard-apply'
@@ -215,6 +216,7 @@ class Guard(QObject):
         self._review, self._review_ok, self._apply_output, self._apply_exit = [], False, '', -1
         self._processes, self._pulse, self._message = [], {}, ''
         self._setup, self._setup_busy, self._setup_output = {'package': '', 'agents': []}, '', ''
+        self._present = None  # agents installed on this machine, once the setup helper says
         self._started = time.time()
         self._boot = boot_id()
         self._hours = {}      # this boot: epoch hour -> agent -> denials
@@ -249,7 +251,7 @@ class Guard(QObject):
 
     @pyqtProperty(str, constant=True)
     def user(self):
-        return os.environ.get('USER', 'qiu')
+        return USER
 
     @pyqtProperty('QVariantList', notify=agentsChanged)
     def agents(self):
@@ -273,12 +275,15 @@ class Guard(QObject):
     def update_state(self):
         """Whether each agent is still held; announced when that changes."""
         before = {a['id']: a['guarded'] and a['enforcing'] for a in self._agents}
+        # Only agents installed here are held or shown; until the setup helper has said
+        # what is installed, every configured agent is listed.
         self._agents = [{
             'id': agent, 'name': spec.get('name', agent), 'profile': spec['profile'],
             'entry': spec.get('entry', ''), 'terminal': spec.get('terminal', False) is True,
             'guarded': forwarder_ok(agent, expand(spec.get('entry', ''))),
             'enforcing': enforcing(spec['profile']),
-        } for agent, spec in self._specs.items()]
+        } for agent, spec in self._specs.items()
+            if self._present is None or agent in self._present]
         for a in self._agents:
             held = a['guarded'] and a['enforcing']
             if a['id'] in before and before[a['id']] != held:
@@ -350,7 +355,7 @@ class Guard(QObject):
 
     @pyqtSlot(str)
     def stop(self, agent):
-        """SIGTERM to every process in the agent's profile (they are qiu's own)."""
+        """SIGTERM to every process in the agent's profile (they are the owner's own)."""
         profile = next((a['profile'] for a in self._agents if a['id'] == agent), None)
         stopped = 0
         for attr in Path('/proc').glob('[0-9]*/attr/current'):
@@ -649,6 +654,9 @@ class Guard(QObject):
         except ValueError:
             self._setup = {'package': '', 'agents': []}
             self._setup_output = output.strip() or f'{SETUP} status failed ({code})'
+        else:
+            self._present = {a['agent'] for a in self._setup['agents'] if a['present']}
+            self.update_state()
         self.setupChanged.emit()
 
     @pyqtSlot(str, str)

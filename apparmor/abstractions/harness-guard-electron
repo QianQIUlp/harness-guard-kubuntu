@@ -29,30 +29,30 @@
   /sys/devices/system/cpu/cpufreq/policy[0-9]*/cpuinfo_max_freq r,
   /sys/devices/@{pci_bus}/**/{revision,config,class} r,
   /sys/bus/pci/devices/ r,
-  /sys/fs/cgroup/user.slice/{cpu.max,user-1000.slice/{cpu.max,user@1000.service/cpu.max}} r,
-  owner /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/{,*/}cpu.max r,
-  owner /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/**/memory.* r,
+  /sys/fs/cgroup/user.slice/{cpu.max,user-@{HG_UID}.slice/{cpu.max,user@@{HG_UID}.service/cpu.max}} r,
+  owner /sys/fs/cgroup/user.slice/user-@{HG_UID}.slice/user@@{HG_UID}.service/app.slice/{,*/}cpu.max r,
+  owner /sys/fs/cgroup/user.slice/user-@{HG_UID}.slice/user@@{HG_UID}.service/**/memory.* r,
   network netlink raw,  # device notifications
 
   # Wayland, GPU, GTK.
-  owner /run/user/1000/wayland-[0-9]* rw,
-  owner /run/user/1000/{mesa,wayland-cursor}-shared-* rw,
+  owner /run/user/@{HG_UID}/wayland-[0-9]* rw,
+  owner /run/user/@{HG_UID}/{mesa,wayland-cursor}-shared-* rw,
   audit deny /dev/dri/card* rw,
   /etc/glvnd/egl_vendor.d/{,*.json} r,
   /etc/gtk-3.0/settings.ini r,
-  owner /home/qiu/.config/gtk-3.0/{settings.ini,*.css} r,
-  owner /home/qiu/.config/mimeapps.list r,
-  owner /home/qiu/.local/share/applications/ r,
-  owner /home/qiu/.local/share/applications/{mimeapps.list,mimeinfo.cache,*.desktop} r,
-  audit deny /home/qiu/.{,cache/}fontconfig/{,**} wkl,
+  owner @{HG_HOME}/.config/gtk-3.0/{settings.ini,*.css} r,
+  owner @{HG_HOME}/.config/mimeapps.list r,
+  owner @{HG_HOME}/.local/share/applications/ r,
+  owner @{HG_HOME}/.local/share/applications/{mimeapps.list,mimeinfo.cache,*.desktop} r,
+  audit deny @{HG_HOME}/.{,cache/}fontconfig/{,**} wkl,
 
   # Audio through the sound server; no direct device access.
   /etc/pulse/client.conf r,
   /etc/pulse/client.conf.d/{,*.conf} r,
   /dev/shm/ r,
   owner /dev/shm/pulse-shm-* rwk,
-  owner /run/user/1000/pulse/{,native} rw,
-  owner /run/user/1000/pipewire-0 rw,
+  owner /run/user/@{HG_UID}/pulse/{,native} rw,
+  owner /run/user/@{HG_UID}/pipewire-0 rw,
 
   # System bus: handshake only.
   /run/dbus/system_bus_socket rw,

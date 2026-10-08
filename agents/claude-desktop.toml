@@ -2,13 +2,13 @@
 name = "Claude Desktop"
 # The root-owned forwarder that runs the launcher; the console checks it.
 entry = "/usr/lib/claude-desktop/claude-desktop"
-# The console shows the first version number this prints (run as qiu).
+# The console shows the first version number this prints (run as the owner).
 version = ["/usr/bin/dpkg-query", "-Wf", "${Version}", "claude-desktop"]
 profile = "claude-desktop-guard"
 exec = "/usr/lib/claude-desktop/claude-desktop.real"
 args = ["--ozone-platform=wayland", "--disable-dev-shm-usage", "--password-store=kwallet6"]
 cache = "~/.cache/claude-guard"
-tmp = "/tmp/claude-1000"
+tmp = "/tmp/claude-{uid}"
 keep_env = ["WAYLAND_DISPLAY", "XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"]
 
 [env]
@@ -19,5 +19,5 @@ KDE_SESSION_VERSION = "6"
 GSETTINGS_BACKEND = "memory"
 GSETTINGS_SCHEMA_DIR = "/etc/harness-guard/gtk-schemas"
 GTK_USE_PORTAL = "1"
-PULSE_SERVER = "unix:/run/user/1000/pulse/native"
+PULSE_SERVER = "unix:/run/user/{uid}/pulse/native"
 PULSE_COOKIE = "~/.cache/claude-guard/pulse-cookie"

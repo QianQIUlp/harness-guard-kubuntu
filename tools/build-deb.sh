@@ -19,7 +19,7 @@ trap 'rm -rf "$stage"' EXIT
 root="$stage/root"
 
 # The profiles and agent specs in /etc are package files, not conffiles: the owner's
-# choices live in policy.toml and owner.toml, which postinst writes once and keeps.
+# choices live in policy.toml and owner.toml (detected by postinst), which are kept.
 install -m 644 -D -t "$root/etc/apparmor.d" apparmor/harness-guard-launcher apparmor/claude-code-guard \
     apparmor/claude-desktop-guard apparmor/agy-guard apparmor/antigravity-guard
 install -m 644 -D -t "$root/etc/apparmor.d/abstractions" apparmor/abstractions/harness-guard \
@@ -27,7 +27,7 @@ install -m 644 -D -t "$root/etc/apparmor.d/abstractions" apparmor/abstractions/h
     apparmor/abstractions/harness-guard-electron
 install -m 644 -D -t "$root/etc/harness-guard/agents" agents/*.toml
 install -m 644 -D etc/gitconfig "$root/etc/harness-guard/gitconfig"
-install -m 644 -D -t "$root/usr/share/harness-guard" etc/policy.toml etc/owner.toml etc/gtk.gschema.override
+install -m 644 -D -t "$root/usr/share/harness-guard" etc/policy.toml etc/gtk.gschema.override
 
 install -m 755 -D bin/harness-guard "$root/usr/libexec/harness-guard/launcher"
 install -m 755 -D bin/harness-guard-handoff "$root/usr/libexec/harness-guard/handoff"

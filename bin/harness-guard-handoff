@@ -5,7 +5,7 @@ Installed as /usr/libexec/harness-guard/handoff and started by systemd for each
 connection to /run/user/UID/harness-guard-handoff.sock (harness-guard-handoff.socket).
 A guard can't switch into another one (no_new_privs), so inside a guard listed in the
 agent's handoff_from, harness-guard sends its arguments, working directory and standard
-streams here instead. This runs harness-guard as if qiu had started the agent from a
+streams here instead. This runs harness-guard as if the owner had started the agent from a
 terminal, so the agent gets only its own guard, and the caller never gets the agent's
 files or login. The caller gets the exit status back; if it goes away, the agent is
 stopped.

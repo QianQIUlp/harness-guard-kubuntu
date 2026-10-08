@@ -3,8 +3,9 @@
 # is still confined.
 abi <abi/5.0>,
 include <tunables/global>
+include <tunables/harness-guard>
 
-profile agy-guard /home/qiu/.local/state/agy/guard-bin/agy flags=(attach_disconnected) {
+profile agy-guard @{HG_HOME}/.local/state/agy/guard-bin/agy flags=(attach_disconnected) {
   include <abstractions/harness-guard>
   include <abstractions/harness-guard-antigravity>
   include if exists <harness-guard/agy>
@@ -12,17 +13,17 @@ profile agy-guard /home/qiu/.local/state/agy/guard-bin/agy flags=(attach_disconn
   # The launcher makes agy keep its login in this folder; it never asks the Secret
   # Service, so an attempt is worth logging.
   audit deny dbus send bus=session peer=(name=org.freedesktop.secrets),
-  owner /home/qiu/.gemini/antigravity-cli/ rw,
-  owner /home/qiu/.gemini/antigravity-cli/** rwkmix,
-  owner /home/qiu/.cache/agy-guard/{,**} rwkmix,
-  owner /tmp/agy-1000/{,**} rwkmix,
+  owner @{HG_HOME}/.gemini/antigravity-cli/ rw,
+  owner @{HG_HOME}/.gemini/antigravity-cli/** rwkmix,
+  owner @{HG_HOME}/.cache/agy-guard/{,**} rwkmix,
+  owner /tmp/agy-@{HG_UID}/{,**} rwkmix,
 
   # `agy update`. Inside the launcher's private view ~/.local/bin is
   # ~/.local/state/agy/guard-bin; the host ~/.local/bin/agy is a root-owned, immutable
   # forwarder, and the binary is attached to this profile wherever it is run from.
-  owner /home/qiu/.local/state/agy/{,**} rwk,
-  owner /home/qiu/.local/bin/ r,
-  owner /home/qiu/.local/bin/{agy,agy.*,.agy*} rw,
-  /home/qiu/.local/bin/agy rix,
-  mount options in (rw,bind,silent) /home/qiu/.local/state/agy/guard-bin/ -> /home/qiu/.local/bin/,
+  owner @{HG_HOME}/.local/state/agy/{,**} rwk,
+  owner @{HG_HOME}/.local/bin/ r,
+  owner @{HG_HOME}/.local/bin/{agy,agy.*,.agy*} rw,
+  @{HG_HOME}/.local/bin/agy rix,
+  mount options in (rw,bind,silent) @{HG_HOME}/.local/state/agy/guard-bin/ -> @{HG_HOME}/.local/bin/,
 }

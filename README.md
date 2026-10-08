@@ -1,7 +1,7 @@
 # harness-guard-kubuntu
 
 Kernel-enforced limits for Claude Code (CLI), Claude Desktop, the Antigravity app and
-the Antigravity CLI (`agy`) on one Kubuntu machine (`tele`, user `qiu`, UID 1000, KDE on
+the Antigravity CLI (`agy`) on one Kubuntu machine (KDE on
 Wayland).
 
 The models can't be trusted to restrict themselves, so the limits live outside them, in
@@ -24,7 +24,7 @@ AppArmor. The guard has three goals:
 claude / agy / antigravity / menu entries
   -> root-owned forwarder (~/.local/bin/{claude,agy}, /usr/local/bin/antigravity,
      /usr/lib/claude-desktop/claude-desktop)
-  -> /usr/libexec/harness-guard/launcher AGENT (Python, runs as qiu; how to run each
+  -> /usr/libexec/harness-guard/launcher AGENT (Python, runs as the owner; how to run each
      agent comes from /etc/harness-guard/agents/AGENT.toml)
        allowlisted environment, fetch GitHub token, close inherited descriptors,
        switch itself into the AppArmor profile, verify "(enforce)", set no_new_privs,
@@ -94,7 +94,7 @@ page, with Guard and Release per agent.
 | `~/.agents/skills` | read and execute; from the policy |
 | `~/.claude*`, `~/.config/Claude` | read/write (application state) |
 | `/usr/**`, NVM v22.23.2, `~/.cargo/bin`, `~/.rustup` | read and execute, no writes |
-| Caches and temp | private: `~/.cache/claude-guard`, `/tmp/claude-1000` |
+| Caches and temp | private: `~/.cache/claude-guard`, `/tmp/claude-<uid>` |
 | GitHub | the launcher passes `GH_TOKEN` (from `gh auth token`); `gh` and git HTTPS use it |
 | Network | unrestricted TCP/UDP |
 | Desktop session | Wayland, audio, notifications, tray, URI/file-chooser/settings/shortcut portals |
@@ -113,7 +113,7 @@ sets `no_new_privs`), so Claude can't start agy in `agy-guard` itself. Instead, 
 inside Claude's guards (the root-owned forwarder, also placed in Claude Code's private
 `~/.local/bin`) runs the launcher, which sees it is inside a guard listed in agy's
 `handoff_from` and passes the arguments, the working directory and its pipes to
-`harness-guard-handoff` over `/run/user/1000/harness-guard-handoff.sock`. That service,
+`harness-guard-handoff` over `/run/user/<uid>/harness-guard-handoff.sock`. That service,
 outside the guards, starts `harness-guard agy` exactly as a terminal would, returns the
 exit status, and stops agy if the caller goes away. agy runs with its own guard and
 login; Claude never gets agy's files. Only Claude's guards can reach the socket, the
@@ -147,7 +147,7 @@ which is still confined by the guard. Glycin falls back only on that specific na
 
 ```bash
 ./install.sh               # build the package from this checkout and apt install it
-tools/check.sh             # as qiu, from a normal terminal
+tools/check.sh             # as the owner, from a normal terminal
 ./install.sh uninstall     # apt remove: releases every agent, then removes the package
 ./install.sh purge         # also removes /etc/harness-guard and /var/lib/harness-guard
 ```

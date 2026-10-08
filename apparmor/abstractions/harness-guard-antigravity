@@ -2,8 +2,8 @@
 # projects. Each guard adds its own folder (logins, conversations) and its Secret
 # Service rule. KWallet stays denied, and attempts are logged.
 
-  owner /home/qiu/.gemini/ r,
-  owner /home/qiu/.gemini/config/ rw,
-  owner /home/qiu/.gemini/config/** rwkmix,
+  owner @{HG_HOME}/.gemini/ r,
+  owner @{HG_HOME}/.gemini/config/ rw,
+  owner @{HG_HOME}/.gemini/config/** rwkmix,
 
   audit deny dbus send bus=session peer=(name=org.kde.kwalletd6),

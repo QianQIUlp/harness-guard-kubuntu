@@ -40,6 +40,8 @@ def label():
 
 
 def expand(path):
+    """~/ is the owner's home; {uid} is the owner's UID (agents/AGENT.toml names no user)."""
+    path = path.replace('{uid}', str(UID))
     return str(HOME) + path[1:] if path.startswith('~/') else path
 
 
