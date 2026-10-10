@@ -17,9 +17,15 @@ QtObject {
     readonly property color bright: "#fffaf2"
 
     // An agent's state is a fill, so it reads before any word: red is open (needs you),
-    // ink is running (active, held), paper is idle (held, at rest).
+    // ink is running (active, held), paper is idle (held, at rest) or released (unguarded
+    // because you released it).
     function stateOf(agent, procs) {
-        return !agent || !agent.guarded || !agent.enforcing ? "open" : procs > 0 ? "running" : "idle"
+        return !agent ? "open"
+             : !agent.guarded || !agent.enforcing ? (agent.released ? "released" : "open")
+             : procs > 0 ? "running" : "idle"
+    }
+    function label(state) {
+        return state === "open" ? "OPEN" : state === "running" ? "RUNNING" : state === "released" ? "RELEASED" : "IDLE"
     }
     function fill(state) { return state === "open" ? red : state === "running" ? ink : "transparent" }
     function fore(state) { return state === "open" ? bright : state === "running" ? paper : ink }

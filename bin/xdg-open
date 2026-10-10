@@ -22,10 +22,11 @@ def main(args):
     if token := os.environ.get('XDG_ACTIVATION_TOKEN'):
         options['activation_token'] = GLib.Variant('s', token)
     fds = None
-    if url.scheme and url.scheme != 'file':
+    # An existing file wins, so a name like notes:draft.md is not taken for a URL.
+    if url.scheme and url.scheme != 'file' and not os.path.lexists(target):
         method, params = 'OpenURI', ('', target, options)
     else:
-        path = unquote(url.path) if url.scheme else target
+        path = unquote(url.path) if url.scheme == 'file' else target
         try:
             fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
         except OSError as error:

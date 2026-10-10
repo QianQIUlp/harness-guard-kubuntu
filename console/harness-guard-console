@@ -83,7 +83,15 @@ def forwarder_ok(agent, entry):
 
 
 def enforcing(profile):
-    """Same probe as check.sh: a process switched into the profile reports (enforce)."""
+    """Whether the loaded profile enforces. The kernel's list says so without a trace;
+    where it isn't readable, the same probe as check.sh (a process switched into the
+    profile reports (enforce)), which logs an AppArmor AUDIT line each time."""
+    try:
+        loaded = Path('/sys/kernel/security/apparmor/profiles').read_text().splitlines()
+    except OSError:
+        pass
+    else:
+        return f'{profile} (enforce)' in loaded
     try:
         label = subprocess.run(['/usr/bin/setpriv', '--no-new-privs', '--', '/usr/bin/aa-exec',
                                 '-p', profile, '--', '/usr/bin/cat', '/proc/self/attr/current'],
@@ -217,6 +225,7 @@ class Guard(QObject):
         self._processes, self._pulse, self._message = [], {}, ''
         self._setup, self._setup_busy, self._setup_output = {'package': '', 'agents': []}, '', ''
         self._present = None  # agents installed on this machine, once the setup helper says
+        self._settling = set()  # guarded or released from here; its new status is on its way
         self._started = time.time()
         self._boot = boot_id()
         self._hours = {}      # this boot: epoch hour -> agent -> denials
@@ -275,18 +284,21 @@ class Guard(QObject):
     def update_state(self):
         """Whether each agent is still held; announced when that changes."""
         before = {a['id']: a['guarded'] and a['enforcing'] for a in self._agents}
+        # Released by you (no receipt, remembered): unguarded on purpose, not an alarm.
+        released = {a['agent'] for a in self._setup['agents'] if a.get('released') and not a.get('guarded')}
         # Only agents installed here are held or shown; until the setup helper has said
         # what is installed, every configured agent is listed.
         self._agents = [{
             'id': agent, 'name': spec.get('name', agent), 'profile': spec['profile'],
             'entry': spec.get('entry', ''), 'terminal': spec.get('terminal', False) is True,
             'guarded': forwarder_ok(agent, expand(spec.get('entry', ''))),
-            'enforcing': enforcing(spec['profile']),
+            'enforcing': enforcing(spec['profile']), 'released': agent in released,
         } for agent, spec in self._specs.items()
             if self._present is None or agent in self._present]
         for a in self._agents:
             held = a['guarded'] and a['enforcing']
-            if a['id'] in before and before[a['id']] != held:
+            if (a['id'] in before and before[a['id']] != held and not a['released']
+                    and a['id'] not in self._settling):
                 self.record('held' if held else 'open', a['id'],
                            'held again' if held else 'no longer held')
                 if not held:
@@ -657,6 +669,7 @@ class Guard(QObject):
         else:
             self._present = {a['agent'] for a in self._setup['agents'] if a['present']}
             self.update_state()
+            self._settling.clear()
         self.setupChanged.emit()
 
     @pyqtSlot(str, str)
@@ -671,6 +684,7 @@ class Guard(QObject):
             messages = {126: 'Cancelled: no password was given.', 127: 'Not authorized.'}
             self._setup_busy, self._setup_output = '', messages.get(code, output.strip())
             if code == 0:
+                self._settling.add(agent)  # recorded here; no "no longer held" alarm
                 self.record('held' if action == 'guard' else 'open', agent,
                             'guarded from the console' if action == 'guard' else 'released from the console')
             self.refresh()
@@ -870,10 +884,12 @@ def tray_for(app, guard):
 
     def update():
         held = [a for a in guard.agents if a['guarded'] and a['enforcing']]
-        open_ = len(guard.agents) - len(held)
+        released = sum(1 for a in guard.agents if a['released'] and a not in held)
+        open_ = len(guard.agents) - len(held) - released
         tray.setIcon(QIcon(ICON['-open' if open_ else '-held']))
         live = sum(1 for n in guard.running.values() if n)
         tray.setToolTip('Harness Guard: ' + (f'{open_} not held' if open_ else 'all held')
+                        + (f', {released} released' if released else '')
                         + (f', {live} running' if live else ''))
         for action in starts:
             menu.removeAction(action)

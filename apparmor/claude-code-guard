@@ -1,9 +1,12 @@
 # AppArmor guard for Claude Code (native CLI). Installed as /etc/apparmor.d/claude-code-guard.
+# While Claude Code or Desktop is guarded it also attaches to
+# ~/.local/share/claude/versions/* (Desktop's guard can write there); once both are
+# released it attaches to nothing (@{HG_ATTACH_CLAUDE_CODE}, set by harness-guard-apply).
 abi <abi/5.0>,
 include <tunables/global>
 include <tunables/harness-guard>
 
-profile claude-code-guard @{HG_HOME}/.local/share/claude/versions/* flags=(attach_disconnected) {
+profile claude-code-guard @{HG_ATTACH_CLAUDE_CODE} flags=(attach_disconnected) {
   include <abstractions/harness-guard>
   include <abstractions/harness-guard-claude>
   include if exists <harness-guard/claude-code>

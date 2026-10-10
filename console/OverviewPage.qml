@@ -8,7 +8,7 @@ Item {
     id: page
     property var nav
     readonly property var words: ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight"]
-    readonly property int open: guard.agents.filter(a => !nav.held(a)).length
+    readonly property int open: guard.agents.filter(a => !nav.held(a) && !a.released).length
     readonly property int live: guard.agents.filter(a => (guard.running[a.id] || 0) > 0).length
     readonly property int denied: guard.denialHours.reduce((n, b) => n + b.total, 0)
 
@@ -144,7 +144,7 @@ Item {
                                 spacing: 9
                                 StateMark { state: cell.st; tint: cell.fore }
                                 Text {
-                                    text: cell.st === "open" ? "OPEN" : cell.st === "running" ? "RUNNING" : "IDLE"
+                                    text: Theme.label(cell.st)
                                     color: cell.fore
                                     font.family: Theme.mono
                                     font.pixelSize: 11
@@ -166,7 +166,7 @@ Item {
                                 y: 66
                                 width: parent.width - 52 - (quick.visible ? quick.width : 0)
                                 text: cell.modelData.name
-                                held: cell.st !== "open"
+                                held: cell.st === "running" || cell.st === "idle"
                                 size: 46
                                 color: cell.fore
                                 outline: Theme.bright
@@ -176,7 +176,8 @@ Item {
                                 x: 26
                                 y: 128
                                 width: parent.width - 52
-                                text: cell.st === "open"
+                                text: cell.st === "released" ? "Released by you; it runs unguarded."
+                                      : cell.st === "open"
                                       ? (!cell.modelData.guarded ? "Its entry point no longer runs the launcher." : "Its profile is not enforcing.")
                                       : cell.paths.map(p => p.path + " " + (p.access === "none" ? "⊘" : p.access.toUpperCase())).join("   ")
                                 color: cell.st === "open" ? cell.fore : Theme.soft(cell.st)

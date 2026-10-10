@@ -1,13 +1,15 @@
 # Guard for the Antigravity app. /usr/local/bin/antigravity and the desktop entry go
-# through the launcher (harness-guard-setup guard antigravity) (see agents/antigravity.toml); the profile also attaches to the
-# app binary, so running it directly is still confined. /opt/antigravity belongs to the owner
+# through the launcher (harness-guard-setup guard antigravity) (see agents/antigravity.toml).
+# While the app is guarded the profile also attaches to the app binary, so running it
+# directly is still confined; once released it attaches to nothing
+# (@{HG_ATTACH_ANTIGRAVITY}, set by harness-guard-apply). /opt/antigravity belongs to the owner
 # but stays read-only here: the app's updater is inactive for this install, and new
 # versions are installed outside the guard.
 abi <abi/5.0>,
 include <tunables/global>
 include <tunables/harness-guard>
 
-profile antigravity-guard /opt/antigravity/antigravity flags=(attach_disconnected) {
+profile antigravity-guard @{HG_ATTACH_ANTIGRAVITY} flags=(attach_disconnected) {
   include <abstractions/harness-guard>
   include <abstractions/harness-guard-antigravity>
   include if exists <harness-guard/antigravity>
