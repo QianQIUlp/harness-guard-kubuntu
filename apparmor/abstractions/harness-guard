@@ -41,7 +41,7 @@
   owner @{HG_HOME}/.nvm/nvm-exec rix,
   owner @{HG_HOME}/.nvm/alias/{,**} r,
   owner @{HG_HOME}/.nvm/versions/{,node/} r,
-  owner @{HG_HOME}/.nvm/versions/node/v22.23.2/{,**} rmix,
+  owner @{HG_HOME}/.nvm/versions/node/v*/{,**} rmix,  # any installed Node; the launcher picks nvm's default
   owner @{HG_HOME}/.cargo/ r,
   owner @{HG_HOME}/.cargo/{env,config,config.toml} r,
   owner @{HG_HOME}/.cargo/bin/{,**} rmix,

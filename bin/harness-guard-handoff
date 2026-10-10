@@ -34,12 +34,20 @@ def receive(conn):
     if not head:
         sys.exit(0)  # connected and left (tools/check.sh)
     if len(fds) != 4 or len(head) != 4 or int.from_bytes(head, 'big') > 1 << 20:
+        for fd in fds:
+            os.close(fd)
         raise RuntimeError('malformed request')
     size = int.from_bytes(head, 'big')
     body = conn.recv(size, socket.MSG_WAITALL)
-    if len(body) != size:
+    try:
+        request = json.loads(body)
+    except ValueError:
+        request = None
+    if len(body) != size or not isinstance(request, dict):
+        for fd in fds:
+            os.close(fd)
         raise RuntimeError('malformed request')
-    return json.loads(body), fds
+    return request, fds
 
 
 def check(peer, request, cwd):
@@ -67,7 +75,12 @@ def main():
     conn = socket.socket(fileno=0)  # StandardInput=socket
     _, uid, _ = struct.unpack('3i', conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
     peer = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERSEC, 256).split(b'\0')[0].decode().strip()
-    request, (stdin, stdout, stderr, cwd) = receive(conn)
+    try:
+        request, (stdin, stdout, stderr, cwd) = receive(conn)
+    except (OSError, RuntimeError) as error:
+        print(f'refused: {error}', file=sys.stderr)
+        conn.sendall((126).to_bytes(4, 'big', signed=True))
+        return
     try:
         if uid != UID:
             raise RuntimeError(f'uid {uid} may not use the hand-off')
@@ -78,10 +91,16 @@ def main():
         conn.sendall((126).to_bytes(4, 'big', signed=True))
         return
     print(f'{peer} starts {agent} in {path} ({len(args)} arguments)', file=sys.stderr)
-    agent_process = subprocess.Popen([LAUNCHER, agent, *args], cwd=path, stdin=stdin,
-                                     stdout=stdout, stderr=stderr, start_new_session=True)
-    for fd in (stdin, stdout, stderr, cwd):
-        os.close(fd)
+    try:
+        agent_process = subprocess.Popen([LAUNCHER, agent, *args], cwd=path, stdin=stdin,
+                                         stdout=stdout, stderr=stderr, start_new_session=True)
+    except OSError as error:
+        os.write(stderr, f'harness-guard-handoff: cannot start {agent}: {error}\n'.encode())
+        conn.sendall((127).to_bytes(4, 'big', signed=True))
+        return
+    finally:
+        for fd in (stdin, stdout, stderr, cwd):
+            os.close(fd)
     poll = select.poll()
     poll.register(conn, select.POLLIN)
     poll.register(os.pidfd_open(agent_process.pid), select.POLLIN)

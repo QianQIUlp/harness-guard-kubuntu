@@ -36,6 +36,7 @@ VAR = Path('/var/lib/harness-guard')
 RECEIPTS = VAR / 'receipts'
 RELEASED = VAR / 'released'
 LAUNCHER = '/usr/libexec/harness-guard/launcher'
+APPLY = '/usr/sbin/harness-guard-apply'
 UNIT = 'harness-guard-handoff.socket'
 MAX_INLINE = 1 << 20  # originals larger than this are moved aside, never copied
 
@@ -153,10 +154,14 @@ def write(path, data, mode, uid=0, gid=0, frozen=False):
     directory = os.path.dirname(path)
     fd, temp = tempfile.mkstemp(dir=directory, prefix='.harness-guard-setup.')
     try:
+        # Owner and mode through the descriptor: a guard that swaps the folder for a link
+        # after mkstemp can't make root chown or chmod a file of its choosing.
         with os.fdopen(fd, 'wb') as f:
             f.write(data)
-        os.chown(temp, uid, gid)
-        os.chmod(temp, mode)
+            f.flush()
+            os.fchown(f.fileno(), uid, gid)
+            os.fchmod(f.fileno(), mode)
+            os.fsync(f.fileno())
         if not os.path.islink(path) and os.path.isfile(path) and immutable(path):
             set_immutable(path, False)
         os.replace(temp, path)
@@ -342,10 +347,13 @@ def undo(item):
 
 
 def newest_claude():
-    """Where `claude` should point when its original version was removed by an update."""
-    current = os.path.join(CLAUDE_BIN, 'claude')
-    if os.path.islink(current) and os.path.exists(current):
-        return os.readlink(current)
+    """Where `claude` should point when its original version was removed by an update:
+    the version the guard last selected, else the newest. The guard can rewrite its link,
+    so it is followed only to an installed version, never to a file elsewhere."""
+    current = os.path.realpath(os.path.join(CLAUDE_BIN, 'claude'))
+    if (os.path.dirname(current) == VERSIONS and re.fullmatch(r'\d+\.\d+\.\d+', os.path.basename(current))
+            and os.path.isfile(current)):
+        return current
     found = [p for p in Path(VERSIONS).iterdir() if re.fullmatch(r'\d+\.\d+\.\d+', p.name)]
     if not found:
         raise SetupError(f'no Claude Code version in {VERSIONS}')
@@ -407,9 +415,12 @@ def plan(agent):
         except OSError:
             text = None
         if text is not None:
-            entry = f'Exec={APP_ENTRY} %U'.encode()
-            edited = re.sub(rb'^Exec=' + re.escape(APP.encode()) + rb'( %U)?$', entry, text, flags=re.M)
-            if edited != text or re.search(rb'^' + re.escape(entry) + rb'$', text, re.M):
+            # Every Exec line (the main one and any actions), keeping its arguments.
+            def entry(match):
+                rest = match.group(1)
+                return b'Exec=' + APP_ENTRY.encode() + (rest if b'%' in rest else rest + b' %U')
+            edited = re.sub(rb'^Exec=' + re.escape(APP.encode()) + rb'((?:[ \t].*)?)$', entry, text, flags=re.M)
+            if edited != text or re.search(rb'^Exec=' + re.escape(APP_ENTRY.encode()) + rb'(\s|$)', text, re.M):
                 items.append({'kind': 'file', 'path': APP_DESKTOP, 'keep_owner': True,
                               'mode': stat.S_IMODE(os.stat(APP_DESKTOP).st_mode), 'content': edited})
         return items
@@ -515,6 +526,12 @@ def release(agent, spec, remember):
     return [n for n in notes if n.startswith('FAILED')]
 
 
+def reattach():
+    """Reload the profiles: those of the Antigravity app and Claude Code attach to the
+    vendor binary only while the agent has a receipt (see harness-guard-apply)."""
+    run(APPLY)
+
+
 def status(as_json):
     out = []
     for agent, spec in agents().items():
@@ -582,13 +599,20 @@ def main():
             except (OSError, SetupError) as error:
                 failed.append(f'{agent}: {error}')
                 print(f'harness-guard-setup: {agent}: {error}', file=sys.stderr)
+        try:
+            reattach()
+        except SetupError as error:
+            failed.append(str(error))
+            print(f'harness-guard-setup: {error}', file=sys.stderr)
         return 1 if failed else 0
     if target not in specs:
         raise SetupError(f'unknown agent {target}')
-    if command == 'guard':
-        guard(target, specs[target])
-        return 0
-    return 1 if release(target, specs[target], remember=True) else 0
+    try:
+        failed = guard(target, specs[target]) if command == 'guard' else \
+            release(target, specs[target], remember=True)
+    finally:
+        reattach()  # also after a guard that stopped halfway: its receipt is kept
+    return 1 if failed else 0
 
 
 if __name__ == '__main__':

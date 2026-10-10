@@ -36,7 +36,11 @@ claude / agy / antigravity / menu entries
 The profiles also attach by path (`~/.local/share/claude/versions/*`,
 `claude-desktop.real`, `~/.local/state/agy/guard-bin/agy` and
 `/opt/antigravity/antigravity`), so running a vendor binary directly is still confined.
-If the
+A released agent runs as its vendor shipped it: the two attachments to vendor paths
+(`versions/*`, `/opt/antigravity/antigravity`) come from `@{HG_ATTACH_*}` in
+`/etc/apparmor.d/tunables/harness-guard`, which `harness-guard-apply` points at a path
+that never exists once the agent has no receipt. Claude Code's attachment also stays
+while Claude Desktop is guarded, because Desktop's guard can write `versions/`. If the
 profile is missing or only complaining, the launcher refuses to start; it never falls
 back to running unconfined.
 
@@ -93,7 +97,7 @@ page, with Guard and Release per agent.
 | `~/src/**` | read, write, execute (children stay confined); from the policy |
 | `~/.agents/skills` | read and execute; from the policy |
 | `~/.claude*`, `~/.config/Claude` | read/write (application state) |
-| `/usr/**`, NVM v22.23.2, `~/.cargo/bin`, `~/.rustup` | read and execute, no writes |
+| `/usr/**`, every NVM Node (the default first in `PATH`), `~/.cargo/bin`, `~/.rustup` | read and execute, no writes |
 | Caches and temp | private: `~/.cache/claude-guard`, `/tmp/claude-<uid>` |
 | GitHub | the launcher passes `GH_TOKEN` (from `gh auth token`); `gh` and git HTTPS use it |
 | Network | unrestricted TCP/UDP |

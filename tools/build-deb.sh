@@ -52,7 +52,7 @@ cat > "$doc/copyright" <<EOF
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: harness-guard
 
-Files: etc/apparmor.d/claude-desktop-guard
+Files: etc/apparmor.d/claude-desktop-guard etc/apparmor.d/abstractions/harness-guard-electron
 Comment: Portions adapted from roddhjav/apparmor.d f9ee26eb2d44db2a0ae0fd546cdd845f1bb86c2a
 Copyright: 2024-2026 Alexandre Pujol <alexandre@pujol.io>
 License: GPL-2.0-only

@@ -101,7 +101,7 @@ Item {
                         Layout.alignment: Qt.AlignVCenter
                     }
                     Text {
-                        text: page.st === "open" ? "OPEN" : page.st === "running" ? "RUNNING" : "IDLE"
+                        text: Theme.label(page.st)
                         color: page.fore
                         font.family: Theme.mono
                         font.pixelSize: 12
@@ -123,7 +123,7 @@ Item {
                     AgentName {
                         width: parent.width
                         text: page.agent.name
-                        held: page.st !== "open"
+                        held: page.st === "running" || page.st === "idle"
                         size: Math.min(104, Math.max(56, hero.width / 8.5))
                         tracking: -3.5
                         color: page.fore
@@ -134,6 +134,7 @@ Item {
                         wrapMode: Text.WordWrap
                         text: page.st === "running" ? "Held by " + page.agent.profile + ". Reach changes load while it runs."
                             : page.st === "idle" ? "Held, at rest. It starts through the launcher, never around it."
+                            : page.st === "released" ? "Released by you: it runs as its vendor ships it, unguarded. Guard it again in Settings."
                             : !page.agent.guarded ? page.agent.entry + " no longer runs the launcher. Guard it again in Settings."
                             : page.agent.profile + " is not enforcing. Reinstall the package."
                         color: Theme.soft(page.st)
@@ -149,7 +150,7 @@ Item {
                     id: actions
                     anchors { right: parent.right; top: parent.top; rightMargin: 30; topMargin: 22 }
                     spacing: 26
-                    visible: page.st !== "open"
+                    visible: page.st === "running" || page.st === "idle"
 
                     Field {
                         id: folder

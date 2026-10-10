@@ -8,14 +8,16 @@
   owner @{HG_HOME}/.cache/claude-guard/{,**} rwkmix,
   owner /tmp/claude-@{HG_UID}/{,**} rwkmix,
 
-  # Claude Code native installs and updates. Binaries in versions/ are attached to
-  # claude-code-guard, so writing them cannot create an unconfined program.
+  # Claude Code native installs and updates. While either Claude guard is in use,
+  # binaries in versions/ are attached to claude-code-guard (harness-guard-apply), so
+  # writing them cannot create an unconfined program.
   owner @{HG_HOME}/.local/share/claude/versions/ rw,
   owner @{HG_HOME}/.local/share/claude/versions/** rwkmix,
   owner @{HG_HOME}/.local/state/claude/{,**} rwk,
   owner @{HG_HOME}/.local/bin/ r,
   # Inside the launcher's private view this is ~/.local/state/claude/guard-bin; the
-  # host file is a root-owned, immutable forwarder.
+  # host file is a root-owned, immutable forwarder. Desktop has no private view, so
+  # while Claude Code is not guarded harness-guard-apply denies these writes to Desktop.
   owner @{HG_HOME}/.local/bin/claude{,.tmp.*} rw,
   @{HG_HOME}/.local/bin/claude rix,
   mount options in (rw,bind,silent) @{HG_HOME}/.local/state/claude/guard-bin/ -> @{HG_HOME}/.local/bin/,

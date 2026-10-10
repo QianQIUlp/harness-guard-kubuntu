@@ -39,6 +39,7 @@ m = types.ModuleType('setup'); m.__file__ = SRC
 exec(compile(src, SRC, 'exec'), m.__dict__)
 
 frozen, diversions, acl, modules, units = set(), {}, set(), set(), {'enabled': False}
+applied = []  # receipts present at each profile reload
 log = []
 class Res:
     def __init__(s, out='', rc=0): s.stdout, s.stderr, s.returncode = out, '', rc
@@ -61,6 +62,7 @@ def run(*c, check=True):
     if tool == 'setfacl': (acl.add if c[1] == '-m' else acl.discard)(c[-1]); return Res()
     if tool == 'modprobe': (modules.discard if '-r' in c else modules.add)(c[-1]); return Res()
     if tool == 'dpkg-query': return Res('0.7.0')
+    if tool == 'harness-guard-apply': applied.append(sorted(os.listdir(f'{R}/var/lib/harness-guard/receipts'))); return Res()
     raise AssertionError(c)
 m.run = run
 m.user_systemctl = lambda *a: Res()
@@ -70,6 +72,7 @@ real_chown = os.chown
 m.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith('__')})
 owners = {}
 def chown(p, uid, gid, follow_symlinks=True): owners[p] = (uid, gid)
+def fchown(fd, uid, gid): owners[os.readlink(f'/proc/self/fd/{fd}')] = (uid, gid)
 def lstat(p):
     st = os.lstat(p); u, g = owners.get(p, (st.st_uid, st.st_gid))
     return types.SimpleNamespace(**{**{k: getattr(st, k) for k in dir(st) if k.startswith('st_')}, 'st_uid': u, 'st_gid': g})
@@ -78,6 +81,7 @@ def move(a, b):
     if a in owners: owners[b] = owners.pop(a)
     else: owners.pop(b, None)
 def unlink(p): os.unlink(p); owners.pop(p, None)
+m.os.fchown = fchown
 m.os.chown, m.os.lstat, m.os.replace, m.os.rename, m.os.unlink = chown, lstat, move, move, unlink
 m.os.path = os.path
 
@@ -204,5 +208,35 @@ try:
 except m.SetupError as e:
     print('refused:', e)
 assert os.listdir(f'{R}/elsewhere') == []
+# Every guard and release reloads the profiles afterwards (their attachments follow the receipts).
+applied.clear(); cli('guard', 'antigravity'); assert applied == [['antigravity.json']], applied
+cli('release', 'antigravity'); assert applied[-1] == [], applied
+cli('guard', 'antigravity')  # by name clears the remembered release
+
+# Release follows the guard's version link only to an installed version: the guard can
+# point it at a file of its own, which the released `claude` would then run unguarded.
+cli('release', '--all')
+shutil.rmtree(f'{R}/elsewhere'); os.unlink(f'{H}/.local/state/claude/guard-bin')
+cli('guard', '--detected')
+os.unlink(os.readlink(f'{H}/.local/bin/claude') if os.path.islink(f'{H}/.local/bin/claude') else f'{H}/.local/share/claude/versions/2.1.300')
+mk(f'{H}/.local/share/claude/versions/2.1.301', b'ELF claude newer', 0o755)
+mk(f'{H}/src/evil', b'#!/bin/sh\n', 0o755)
+link = f'{H}/.local/state/claude/guard-bin/claude'
+if os.path.lexists(link): os.unlink(link)
+os.symlink(f'{H}/src/evil', link)
+rc, out = cli('release', 'claude-code'); print(out)
+assert os.readlink(f'{H}/.local/bin/claude') == f'{H}/.local/share/claude/versions/2.1.301', os.readlink(f'{H}/.local/bin/claude')
+
+# Every Exec line of the menu entry goes through the forwarder, arguments kept.
+cli('release', '--all')
+mk(f'{H}/.local/share/applications/antigravity.desktop',
+   f'[Desktop Entry]\nExec={R}/opt/antigravity/antigravity\n[Desktop Action new]\nExec={R}/opt/antigravity/antigravity --new-window %F\nExec={R}/opt/antigravity/antigravity-other\n'.encode(), 0o644)
+original = open(f'{H}/.local/share/applications/antigravity.desktop', 'rb').read()
+cli('guard', 'antigravity')
+text = open(f'{H}/.local/share/applications/antigravity.desktop', 'rb').read().decode()
+assert f'Exec={R}/usr/local/bin/antigravity %U\n' in text and f'Exec={R}/usr/local/bin/antigravity --new-window %F\n' in text, text
+assert f'Exec={R}/opt/antigravity/antigravity-other\n' in text, text
+cli('guard', 'antigravity'); assert open(f'{H}/.local/share/applications/antigravity.desktop', 'rb').read().decode() == text
+cli('release', 'antigravity'); assert open(f'{H}/.local/share/applications/antigravity.desktop', 'rb').read() == original
 print('ALL OK')
 shutil.rmtree(R)

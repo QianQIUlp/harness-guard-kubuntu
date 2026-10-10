@@ -67,20 +67,29 @@ loaded=$(for f in /etc/apparmor.d/harness-guard/*; do printf '== %s\n%s\n\n' "${
     || { echo "  FAIL  policy changed or invalid; run: sudo harness-guard-apply"; status=1; }
 
 echo "launcher:"
-claude --version >/dev/null && echo "  ok    claude --version through the launcher (clean label, private namespace)" \
-    || { echo "  FAIL  claude --version"; status=1; }
-agy --version >/dev/null && echo "  ok    agy --version through the launcher" \
-    || { echo "  FAIL  agy --version"; status=1; }
-[ "$(stat -c %u ~/.local/bin/agy)" = 0 ] && lsattr ~/.local/bin/agy 2>/dev/null | grep -q '^....i' \
-    && echo "  ok    ~/.local/bin/agy is a root-owned, immutable forwarder" \
-    || { echo "  FAIL  ~/.local/bin/agy is not the guard's forwarder"; status=1; }
-[ "$(stat -c %u ~/.local/state/claude/guard-bin/agy)" = 0 ] \
-    && lsattr ~/.local/state/claude/guard-bin/agy 2>/dev/null | grep -q '^....i' \
-    && echo "  ok    Claude Code's private ~/.local/bin/agy is a root-owned, immutable forwarder" \
-    || { echo "  FAIL  Claude Code's private ~/.local/bin/agy is not the guard's forwarder"; status=1; }
-# The hand-off must be running and refuse callers outside the guards it lists.
-python3 - <<'PY' && echo "  ok    the agy hand-off is running and refuses unguarded callers" \
-    || { echo "  FAIL  agy hand-off (systemctl --user status harness-guard-handoff.socket)"; status=1; }
+# Only guarded agents go through the launcher; one you released runs as its vendor shipped it.
+guarded=$(/usr/sbin/harness-guard-setup status --json 2>/dev/null | python3 -c '
+import json, sys
+print(" ".join(a["agent"] for a in json.load(sys.stdin)["agents"] if a["guarded"]))' 2>/dev/null)
+is_guarded() { case " $guarded " in *" $1 "*) return 0;; esac; return 1; }
+skip() { echo "  info  $1 is not guarded here; its launcher checks are skipped"; }
+if is_guarded claude-code; then
+    claude --version >/dev/null && echo "  ok    claude --version through the launcher (clean label, private namespace)" \
+        || { echo "  FAIL  claude --version"; status=1; }
+else skip claude-code; fi
+if is_guarded agy; then
+    agy --version >/dev/null && echo "  ok    agy --version through the launcher" \
+        || { echo "  FAIL  agy --version"; status=1; }
+    [ "$(stat -c %u ~/.local/bin/agy)" = 0 ] && lsattr ~/.local/bin/agy 2>/dev/null | grep -q '^....i' \
+        && echo "  ok    ~/.local/bin/agy is a root-owned, immutable forwarder" \
+        || { echo "  FAIL  ~/.local/bin/agy is not the guard's forwarder"; status=1; }
+    [ "$(stat -c %u ~/.local/state/claude/guard-bin/agy)" = 0 ] \
+        && lsattr ~/.local/state/claude/guard-bin/agy 2>/dev/null | grep -q '^....i' \
+        && echo "  ok    Claude Code's private ~/.local/bin/agy is a root-owned, immutable forwarder" \
+        || { echo "  FAIL  Claude Code's private ~/.local/bin/agy is not the guard's forwarder"; status=1; }
+    # The hand-off must be running and refuse callers outside the guards it lists.
+    python3 - <<'PY' && echo "  ok    the agy hand-off is running and refuses unguarded callers" \
+        || { echo "  FAIL  agy hand-off (systemctl --user status harness-guard-handoff.socket)"; status=1; }
 import json, os, socket
 request = json.dumps({'agent': 'agy', 'args': ['--version']}).encode()
 null = os.open('/dev/null', os.O_RDWR)
@@ -90,15 +99,33 @@ with socket.socket(socket.AF_UNIX) as conn:
                     [null, null, null, os.open('.', os.O_RDONLY | os.O_DIRECTORY)])
     raise SystemExit(conn.recv(4, socket.MSG_WAITALL) != (126).to_bytes(4, 'big', signed=True))
 PY
-[ ! -L /usr/local/bin/antigravity ] && grep -qs harness-guard /usr/local/bin/antigravity \
-    && grep -qx 'Exec=/usr/local/bin/antigravity %U' ~/.local/share/applications/antigravity.desktop \
-    && echo "  ok    the antigravity command and menu entry go through the launcher" \
-    || { echo "  FAIL  Antigravity starts without the launcher (after reinstalling it, guard it again in the console's Settings)"; status=1; }
-# The program each agent's launcher runs must exist (e.g. Desktop's diverted .real).
+else skip agy; fi
+desktop=~/.local/share/applications/antigravity.desktop
+if is_guarded antigravity; then
+    [ ! -L /usr/local/bin/antigravity ] && grep -qs harness-guard /usr/local/bin/antigravity \
+        && { [ ! -e "$desktop" ] || { grep -qE '^Exec=/usr/local/bin/antigravity( |$)' "$desktop" \
+                                      && ! grep -qE '^Exec=/opt/antigravity/antigravity( |$)' "$desktop"; }; } \
+        && echo "  ok    the antigravity command and menu entry go through the launcher" \
+        || { echo "  FAIL  Antigravity starts without the launcher (after reinstalling it, guard it again in the console's Settings)"; status=1; }
+else skip antigravity; fi
+# The program each guarded agent's launcher runs must exist (e.g. Desktop's diverted .real).
 for spec in /etc/harness-guard/agents/*.toml; do
+    agent=$(basename "$spec" .toml)
+    is_guarded "$agent" || continue
     exec=$(sed -n 's/^exec = "\([^"]*\)".*$/\1/p' "$spec" | sed "s|^~|$HOME|")
-    [ -x "$exec" ] && echo "  ok    $(basename "$spec" .toml) runs $exec" \
-        || { echo "  FAIL  $(basename "$spec" .toml): $exec is missing (guard it again in the console's Settings)"; status=1; }
+    [ -x "$exec" ] && echo "  ok    $agent runs $exec" \
+        || { echo "  FAIL  $agent: $exec is missing (guard it again in the console's Settings)"; status=1; }
+done
+# A released agent must not stay confined by path without the launcher's settings
+# (Antigravity then can't even start); a guarded one must stay attached.
+for pair in claude-code:CLAUDE_CODE antigravity:ANTIGRAVITY; do
+    agent=${pair%%:*} var=${pair#*:}
+    case $agent in claude-code) is_guarded claude-code || is_guarded claude-desktop;; *) is_guarded "$agent";; esac \
+        && want=attached || want=released
+    line=$(grep "^@{HG_ATTACH_$var}=" /etc/apparmor.d/tunables/harness-guard 2>/dev/null)
+    case $line in *=/usr/libexec/harness-guard/released/*) have=released;; ?*) have=attached;; *) have=missing;; esac
+    [ "$have" = "$want" ] && echo "  ok    $agent's profile is $want by path" \
+        || { echo "  FAIL  $agent's profile is $have by path, not $want (run: sudo harness-guard-apply)"; status=1; }
 done
 [ "$(id -u)" = "$(sed -n 's/^uid = \([0-9]*\)$/\1/p' /etc/harness-guard/owner.toml)" ] \
     && grep -qxF "@{HG_HOME}=$HOME" /etc/apparmor.d/tunables/harness-guard 2>/dev/null \

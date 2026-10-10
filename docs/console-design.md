@@ -225,7 +225,9 @@ release, and remove once, leaving the machine as it was:
   first UID 1000 user) and keeps on upgrade. `harness-guard-apply` writes them to
   `/etc/apparmor.d/tunables/harness-guard` as `@{HG_USER}`, `@{HG_HOME}` and `@{HG_UID}`,
   which every profile includes, so the profiles name no one. The launcher expands
-  `{uid}` in the agent specs. Only the four agents are supported.
+  `{uid}` in the agent specs. Only the four agents are supported. The same file holds
+  `@{HG_ATTACH_*}`: the vendor paths a profile attaches to while its agent has a receipt,
+  so a released agent runs as its vendor ships it; setup reloads after each guard and release.
 - **Detecting agents.** `harness-guard-setup status` reports which of the four are
   installed (their vendor program is at its standard place). The console lists only
   those, and Settings lets you guard or release each one.
